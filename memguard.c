@@ -100,7 +100,7 @@ struct core_info {
 	struct irq_work	pending; /* delayed work for NMIs */
 	struct perf_event *event;/* performance counter i/f */
 
-	struct task_struct *throttle_thread;   /* forced throttle idle thread */
+	struct task_struct *throttle_thread;  /* forced throttle idle thread */
 	wait_queue_head_t throttle_evt; /* throttle wait queue */
 
 	/* statistics */
@@ -586,9 +586,10 @@ static void memguard_process_overflow(struct irq_work *entry)
 	/* wake-up throttle task */
 	cinfo->throttled_task = current;
 	cinfo->throttled_time = start;
-	wake_up_interruptible(&cinfo->throttle_evt);
-	smp_mb();
 	WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
+
+	smp_mb();
+	wake_up_interruptible(&cinfo->throttle_evt);
 }
 
 /**
@@ -1328,7 +1329,6 @@ static int throttle_thread(void *arg)
 			break;
 
 		smp_mb();
-
 		while (cinfo->throttled_task && !kthread_should_stop())
 		{
 			cpu_relax();
