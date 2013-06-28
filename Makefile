@@ -13,12 +13,14 @@ clean:
 	rm hrt thr fps fps-filter
 	rm *~
 
-bench: hrt thr fps-filter fps
+bench: hrt thr fps-filter fps cpuhog matrix
 hrt: hrt.c
 	$(CC) -O2 -o hrt hrt.c -lrt
 thr: thr.c
 	$(CC) -O2 -o thr thr.c -lrt
 fps: fps.c
 	$(CC) -O2 -o $@ $< -lrt
+matrix: matrix.c
+
 fps-filter: fps-filter.cpp
 	$(CXX) -O2 -o $@ $< -lrt

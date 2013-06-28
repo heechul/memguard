@@ -90,6 +90,7 @@ static void ftrace_write(const char *fmt, ...)
 {
 	va_list ap;
 	int n;
+	int ret;
 
 	if (mark_fd < 0)
 		return;
@@ -98,7 +99,7 @@ static void ftrace_write(const char *fmt, ...)
 	n = vsnprintf(buff, BUFSIZ, fmt, ap);
 	va_end(ap);
 
-	write(mark_fd, buff, n);
+	ret = write(mark_fd, buff, n);
 }
 
 uint64_t get_elapsed(struct timespec *start, struct timespec *end)
@@ -118,7 +119,7 @@ uint64_t get_elapsed(struct timespec *start, struct timespec *end)
 void usage(int argc, char *argv[])
 {
 	printf("Usage: $ %s [<option>]*\n\n", argv[0]);
-	printf("-m: memory size in KB. deafult=8192\n");
+	printf("-C: \n");
 	printf("-s: turn serial access mode on\n");
 	printf("-c: CPU to run.\n");
 	printf("-i: iterations. 0 means intefinite. default=0\n");
@@ -138,8 +139,9 @@ int main(int argc, char* argv[])
 	struct item *list;
 	int workingset_size = 1024;
 
-	int compute_load, compute_ms = 10;
-	int interval_ms = 0;
+	int compute_load;
+	float compute_ms = 10.0;
+	float interval_ms = 0.0;
 
 	int i, j;
 	struct list_head head;
@@ -147,7 +149,7 @@ int main(int argc, char* argv[])
 	struct timespec start, end;
 	uint64_t nsdiff;
 	int64_t avglat;
-	uint64_t readsum = 0;
+	uint64_t readsum = 0, cnt;
 	int serial = 0;
 	int repeat = 1;
 	int cpuid = 0;
@@ -171,17 +173,19 @@ int main(int argc, char* argv[])
 			num_processors = sysconf(_SC_NPROCESSORS_CONF);
 			CPU_ZERO(&cmask);
 			CPU_SET(cpuid % num_processors, &cmask);
-			if (sched_setaffinity(0, num_processors, &cmask) < 0)
+			if (sched_setaffinity(0, num_processors, &cmask) < 0) {
 				perror("error");
-			else
+				exit(1);
+			} else
 				fprintf(stderr, "assigned to cpu %d\n", cpuid);
 			break;
 
 		case 'p': /* set priority */
 			prio = strtol(optarg, NULL, 0);
-			if (setpriority(PRIO_PROCESS, 0, prio) < 0)
+			if (setpriority(PRIO_PROCESS, 0, prio) < 0) {
 				perror("error");
-			else
+				exit(2);
+			}else
 				fprintf(stderr, "assigned priority %d\n", prio);
 			break;
 		case 'o': /* SCHED_BATCH */
@@ -200,8 +204,8 @@ int main(int argc, char* argv[])
 			}
 			break;
 		case 'C': /* compute_ms */
-			compute_ms = strtol(optarg, NULL, 0);
-			fprintf(stderr, "C(compute)=%d(ms)\n", compute_ms);
+			compute_ms = strtof(optarg, NULL);
+			fprintf(stderr, "C(compute)=%f(ms)\n", compute_ms);
 			break;
 		case 'i': /* iterations */
 			repeat = strtol(optarg, NULL, 0);
@@ -209,8 +213,8 @@ int main(int argc, char* argv[])
 			break;
 
 		case 'I': /* interval */
-			interval_ms = strtol(optarg, NULL, 0);
-			fprintf(stderr, "I(interval)=%d(ms)\n", interval_ms);
+			interval_ms = strtof(optarg, NULL);
+			fprintf(stderr, "I(interval)=%f(ms)\n", interval_ms);
 			break;
 
 		case 'h':
@@ -267,14 +271,14 @@ int main(int argc, char* argv[])
 	/* 12.623648 - 8MB access time */
 	compute_load = (int)((double)compute_ms * workingset_size / 12.623648); 
 
-	fprintf(stderr, "initialized: compute_ms(%d), interval_ms(%d), compute_load(%d)\n",
+	fprintf(stderr, "initialized: compute_ms(%f), interval_ms(%f), compute_load(%d)\n",
 		compute_ms, interval_ms, compute_load);
 
 	/* add marker */
 	/* actual access */
 	nsdiff = 0; j = 0; i = -1;
 	quit_signal = 0;
-
+	cnt = 0;
 	ftrace_write("PGM: begin main loop\n");
 	clock_gettime(CLOCK_REALTIME, &start);
 	while (1) {
@@ -301,12 +305,14 @@ int main(int argc, char* argv[])
 					usleep(interval_ms*1000);
 				clock_gettime(CLOCK_REALTIME, &start);
 			}
+			cnt++;
 		}
 	}
 out:
 
-	avglat = (int64_t)(nsdiff/(i*j)); 
-	fprintf(stderr, "duration %lldus\naverage %lldns | ", nsdiff/1000, avglat);
+	avglat = (int64_t)(nsdiff/cnt); 
+	fprintf(stderr, "duration %lldus\naverage %lldns | ", 
+		nsdiff/1000, avglat);
 	fprintf(stderr, "bandwidth %lld MB (%lld MiB)/s\n", 
 	       (int64_t)64*1000/avglat, 
 	       (int64_t)64*1000000000/avglat/1024/1024);

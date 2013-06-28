@@ -150,17 +150,19 @@ void usage(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
-	uint64_t sum = 0;
-	unsigned finish = 5;
+	int opt;
 	int cpuid = 0;
 	int prio = 0;        
 	int num_processors;
-	int acc_type = READ;
-	int opt;
 	cpu_set_t cmask;
+	struct sched_param param;
+
+	int acc_type = READ;
+	uint64_t sum = 0;
+	unsigned finish = 5;
 	int use_mmap = 0;
 	int iterations = 0;
-	struct sched_param param;
+
 	int i;
 
 	/*
