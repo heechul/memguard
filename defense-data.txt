@@ -1,5 +1,8 @@
 exp-hrt.sh 
 
+Shared L2 cache
+C0: hrt
+C1: Xorg
 ----[ /run/out.txt ]---
 count:  1000
 min:  10135467.0
@@ -39,3 +42,239 @@ max:  12118829.0
 stdev:  443283.576235
 LINE(avg|min|max|99pct|stdev):  10707056.548 10240498.0 12118829.0 12042544.0 443283.576235
 ------------
+
+Separate L2 cache
+C2: hrt
+C1: Xorg
+>> no memguard
+
+----[ /run/out.txt ]---
+count:  1000
+min:  9739945.0
+avg:  12838960.601
+90pctile:  14797180.0
+95pctile:  15177836.0
+99pctile:  15706400.0
+max:  15959052.0
+stdev:  1477919.50155
+LINE(avg|min|max|99pct|stdev):  12838960.601 9739945.0 15959052.0 15706400.0 1477919.50155
+------------
+>> memguard(excl2)
+m|b|s|m100_200_900|r1|e2|ccommit_7a58667bb67683426a3cd3e0f2b7c7c59bc90452
+
+----[ /run/out.txt ]---
+count:  1000
+min:  10270656.0
+avg:  11420952.243
+90pctile:  11687388.0
+95pctile:  11751747.0
+99pctile:  11869206.0
+max:  12004019.0
+stdev:  232051.519082
+LINE(avg|min|max|99pct|stdev):  11420952.243 10270656.0 12004019.0 11869206.0 232051.519082
+------------
+>> memguard(excl5)
+m|b|s|m100_200_900|r1|e5|ccommit_7a58667bb67683426a3cd3e0f2b7c7c59bc90452
+
+----[ /run/out.txt ]---
+count:  1000
+min:  10198954.0
+avg:  11046454.742
+90pctile:  11334749.0
+95pctile:  11405630.0
+99pctile:  11587675.0
+max:  11779972.0
+stdev:  218446.846382
+LINE(avg|min|max|99pct|stdev):  11046454.742 10198954.0 11779972.0 11587675.0 218446.846382
+------------
+=============================
+
+>> no memguard
+deadline:  13000000
+
+----[ /run/out.txt ]---
+count:  1000
+deadline miss:  485
+deadline miss ratio: (0.485000)
+min:  9878238.0
+avg:  12897655.621
+90pctile:  14992868.0
+95pctile:  15362947.0
+99pctile:  15747278.0
+max:  15999537.0
+stdev:  1515808.27056
+LINE(avg|min|max|99pct|stdev):  12897655.621 9878238.0 15999537.0 15747278.0 1515808.27056
+
+
+>> memguard(excl2)
+m|b|s|m100_200_900|r1|e2|ccommit_7a58667bb67683426a3cd3e0f2b7c7c59bc90452
+deadline:  13000000
+
+----[ /run/out.txt ]---
+count:  1000
+deadline miss:  0
+deadline miss ratio: (0.000000)
+min:  9796527.0
+avg:  11429499.904
+90pctile:  11704969.0
+95pctile:  11783668.0
+99pctile:  11895463.0
+max:  12005780.0
+stdev:  248831.17549
+LINE(avg|min|max|99pct|stdev):  11429499.904 9796527.0 12005780.0 11895463.0 248831.17549
+------------
+>> memguard(excl5)
+m|b|s|m100_200_900|r1|e5|ccommit_7a58667bb67683426a3cd3e0f2b7c7c59bc90452
+deadline:  13000000
+
+----[ /run/out.txt ]---
+count:  1000
+deadline miss:  0
+deadline miss ratio: (0.000000)
+min:  9855662.0
+avg:  11049396.302
+90pctile:  11323181.0
+95pctile:  11380151.0
+99pctile:  11595120.0
+max:  11807259.0
+stdev:  210737.456579
+LINE(avg|min|max|99pct|stdev):  11049396.302 9855662.0 11807259.0 11595120.0 210737.456579
+------------
+
+solo, w/o memguard
+----[ /run/out.txt ]---
+count:  1000
+deadline miss:  0
+deadline miss ratio: (0.000000)
+min:  9581736.0
+avg:  9693184.701
+90pctile:  9746457.0
+95pctile:  9758036.0
+99pctile:  9782723.0
+max:  9899424.0
+stdev:  49637.8484853
+LINE(avg|min|max|99pct|stdev):  9693184.701 9581736.0 9899424.0 9782723.0 49637.8484853
+------------
+=============================
+
+
+H/W prefetche is enabled !!!!
+
+C1: hrt
+C2: Xorg
+
+enable hardware prefetcher
+llc:7024 arch:32bit
+RMIN: 1200
+>> no memguard
+deadline:  13000000
+
+----[ /run/out.txt ]---
+count:  1000
+deadline miss:  491
+deadline miss ratio: (0.491000)
+min:  9894923.0
+avg:  12775512.573
+90pctile:  15016298.0
+95pctile:  15553738.0
+99pctile:  15850109.0
+max:  15991410.0
+stdev:  1676169.1373
+LINE(avg|min|max|99pct|stdev):  12775512.573 9894923.0 15991410.0 15850109.0 1676169.1373
+------------
+>> memguard(excl2)
+m|b|s|m100_200_900|r1|e2|ccommit_7a58667bb67683426a3cd3e0f2b7c7c59bc90452
+deadline:  13000000
+
+----[ /run/out.txt ]---
+count:  1000
+deadline miss:  0
+deadline miss ratio: (0.000000)
+min:  10392969.0
+avg:  11394411.709
+90pctile:  11687130.0
+95pctile:  11743044.0
+99pctile:  11816246.0
+max:  11967115.0
+stdev:  261496.956682
+LINE(avg|min|max|99pct|stdev):  11394411.709 10392969.0 11967115.0 11816246.0 261496.956682
+------------
+>> memguard(excl5)
+m|b|s|m100_200_900|r1|e5|ccommit_7a58667bb67683426a3cd3e0f2b7c7c59bc90452
+deadline:  13000000
+
+----[ /run/out.txt ]---
+count:  1000
+deadline miss:  0
+deadline miss ratio: (0.000000)
+min:  10271313.0
+avg:  11064110.561
+90pctile:  11367288.0
+95pctile:  11497961.0
+99pctile:  11725452.0
+max:  11935444.0
+stdev:  227983.894045
+LINE(avg|min|max|99pct|stdev):  11064110.561 10271313.0 11935444.0 11725452.0 227983.894045
+------------
+=============================
+
+
+Shared L2 cache
+C0: hrt
+C1: Xorg
+
+=============================
+disable hardware prefetcher
+llc:7024 arch:32bit
+RMIN: 1200
+>> no memguard
+deadline:  13000000
+
+----[ /run/out.txt ]---
+count:  1000
+deadline miss:  567
+deadline miss ratio: (0.567000)
+min:  11847051.0
+avg:  13909990.095
+90pctile:  16487197.0
+95pctile:  16788574.0
+99pctile:  16847357.0
+max:  17018729.0
+stdev:  1736170.62135
+LINE(avg|min|max|99pct|stdev):  13909990.095 11847051.0 17018729.0 16847357.0 1736170.62135
+------------
+>> memguard(excl2)
+m|b|s|m900_200|r1|e2|ccommit_7a58667bb67683426a3cd3e0f2b7c7c59bc90452
+deadline:  13000000
+
+----[ /run/out.txt ]---
+count:  1000
+deadline miss:  1
+deadline miss ratio: (0.001000)
+min:  11572321.0
+avg:  11960466.187
+90pctile:  12314738.0
+95pctile:  12399915.0
+99pctile:  12645764.0
+max:  13079178.0
+stdev:  224293.823941
+LINE(avg|min|max|99pct|stdev):  11960466.187 11572321.0 13079178.0 12645764.0 224293.823941
+------------
+>> memguard(excl5)
+m|b|s|m900_200|r1|e5|ccommit_7a58667bb67683426a3cd3e0f2b7c7c59bc90452
+deadline:  13000000
+
+----[ /run/out.txt ]---
+count:  1000
+deadline miss:  0
+deadline miss ratio: (0.000000)
+min:  11565713.0
+avg:  11998961.801
+90pctile:  12439894.0
+95pctile:  12561706.0
+99pctile:  12795331.0
+max:  12818156.0
+stdev:  264945.753645
+LINE(avg|min|max|99pct|stdev):  11998961.801 11565713.0 12818156.0 12795331.0 264945.753645
+------------
+=============================
