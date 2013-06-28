@@ -11,7 +11,7 @@
 /**************************************************************************
  * Conditional Compilation Options
  **************************************************************************/
-#define pr_fmt(fmt) "memguard: " fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define USE_DEBUG  1
 
@@ -34,6 +34,7 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/uaccess.h>
+#include <linux/notifier.h>
 #include <linux/kthread.h>
 #include <linux/printk.h>
 #include <linux/interrupt.h>
@@ -41,6 +42,7 @@
 #  include <linux/sched/rt.h>
 #endif
 #include <linux/cpu.h>
+#include <asm/idle.h>
 
 /**************************************************************************
  * Public Definitions
@@ -162,6 +164,8 @@ static const int prio_to_weight[40] = {
 /**************************************************************************
  * External Function Prototypes
  **************************************************************************/
+extern unsigned long nr_running_cpu(int cpu);
+extern int idle_cpu(int cpu);
 
 /**************************************************************************
  * Local Function Prototypes
@@ -616,7 +620,8 @@ static void period_timer_callback_slave(void *info)
 	int cpu = smp_processor_id();
 
 	/* must be irq disabled. hard irq */
-	BUG_ON(!irqs_disabled() || !in_irq());
+	BUG_ON(!irqs_disabled());
+	WARN_ON_ONCE(!in_irq());
 
 	if (new_period <= cinfo->period_cnt) {
 		trace_printk("ERR: new_period(%ld) <= cinfo->period_cnt(%ld)\n",
@@ -649,6 +654,7 @@ static void period_timer_callback_slave(void *info)
 	/* I'm actively participating */
 	spin_lock(&global->lock);
 	cpumask_clear_cpu(cpu, global->throttle_mask);
+	cpumask_set_cpu(cpu, global->active_mask);
 	spin_unlock(&global->lock);
 
 	trace_printk("%p|New period %ld. global->budget=%d\n",
@@ -1341,6 +1347,46 @@ static int throttle_thread(void *arg)
 	return 0;
 }
 
+/* Idle notifier to look at idle CPUs */
+static int memguard_idle_notifier(struct notifier_block *nb, unsigned long val,
+				void *data)
+{
+	struct core_info *cinfo = this_cpu_ptr(core_info);
+	struct memguard_info *global = &memguard_info;
+	unsigned long flags;
+
+	spin_lock_irqsave(&global->lock, flags);
+	if (val == IDLE_START) {
+		cpumask_clear_cpu(smp_processor_id(), global->active_mask);
+		if (cpumask_equal(global->throttle_mask, global->active_mask)) {
+			spin_unlock(&global->lock);
+			trace_printk("DBG: last idle\n");
+			if (g_use_exclusive == 2) {
+				smp_call_function(__unthrottle_core, NULL, 0);
+			} else if (g_use_exclusive == 5) {
+				smp_call_function_single(global->master, 
+							 __newperiod, (void *)cinfo->period_cnt, 0);
+			}
+			local_irq_restore(flags);
+			return 0;
+		} else
+			trace_printk("DBG: enter idle CPU%d\n",
+				     smp_processor_id());
+	} else {
+		cpumask_set_cpu(smp_processor_id(), global->active_mask);
+		trace_printk("DBG: exit idle CPU%d-nr=%ld\n", 
+			     smp_processor_id(),
+			     nr_running_cpu(smp_processor_id()));
+	}
+	spin_unlock_irqrestore(&global->lock, flags);
+	return 0;
+}
+
+static struct notifier_block memguard_idle_nb = {
+	.notifier_call = memguard_idle_notifier,
+};
+
+
 int init_module( void )
 {
 	int i;
@@ -1450,6 +1496,7 @@ int init_module( void )
 		      HRTIMER_MODE_REL_PINNED);
 	put_cpu();
 
+	idle_notifier_register(&memguard_idle_nb);
 	return 0;
 }
 
@@ -1458,6 +1505,8 @@ void cleanup_module( void )
 	int i;
 
 	struct memguard_info *global = &memguard_info;
+
+	idle_notifier_unregister(&memguard_idle_nb);
 
 	smp_mb();
 
