@@ -571,7 +571,8 @@ static void memguard_process_overflow(struct irq_work *entry)
 			trace_printk("ERR: Unsupported exclusive mode %d\n", 
 				     g_use_exclusive);
 			return;
-		} else if (cpumask_weight(global->active_mask) == 1) {
+		} else if (g_use_exclusive != 0 &&
+			   cpumask_weight(global->active_mask) == 1) {
 			trace_printk("ERR: don't throttle one active core\n");
 			return;
 		}
@@ -718,14 +719,18 @@ static void period_timer_callback_slave(void *info)
 	cinfo->throttled_task = NULL;
 
 	/* per-task donation policy */
-	if (target->policy == SCHED_BATCH || target->policy == SCHED_IDLE) {
+	if (!g_use_reclaim || rt_task(target)) {
+		cinfo->cur_budget = cinfo->budget;
+		trace_printk("HRT or !g_use_reclaim: don't donate\n");
+	} else if (target->policy == SCHED_BATCH || 
+		   target->policy == SCHED_IDLE) {
 		/* Non rt task: donate all */
 		donate_budget(cinfo->period_cnt, cinfo->budget);
 		cinfo->cur_budget = 0;
 		trace_printk("NonRT: donate all %d\n", cinfo->budget);
 	} else if (target->policy == SCHED_NORMAL) {
 		BUG_ON(rt_task(target));
-		if (g_use_reclaim && cinfo->used[1] < cinfo->budget) {
+		if (cinfo->used[1] < cinfo->budget) {
 			/* donate 'expected surplus' ahead of time. */
 			int surplus = max(cinfo->budget - cinfo->used[1], 0);
 			WARN_ON_ONCE(surplus > global->max_budget);
@@ -737,10 +742,6 @@ static void period_timer_callback_slave(void *info)
 			cinfo->cur_budget = cinfo->budget;
 			trace_printk("SRT: don't donate\n");
 		}
-	} else {
-		BUG_ON(!rt_task(target));
-		cinfo->cur_budget = cinfo->budget;
-		trace_printk("HRT: don't donate\n");
 	}
 
 	/* setup an interrupt */
@@ -1351,33 +1352,16 @@ static int throttle_thread(void *arg)
 static int memguard_idle_notifier(struct notifier_block *nb, unsigned long val,
 				void *data)
 {
-	struct core_info *cinfo = this_cpu_ptr(core_info);
 	struct memguard_info *global = &memguard_info;
 	unsigned long flags;
 
 	spin_lock_irqsave(&global->lock, flags);
 	if (val == IDLE_START) {
 		cpumask_clear_cpu(smp_processor_id(), global->active_mask);
-		if (cpumask_equal(global->throttle_mask, global->active_mask)) {
-			spin_unlock(&global->lock);
+		if (cpumask_equal(global->throttle_mask, global->active_mask))
 			trace_printk("DBG: last idle\n");
-			if (g_use_exclusive == 2) {
-				smp_call_function(__unthrottle_core, NULL, 0);
-			} else if (g_use_exclusive == 5) {
-				smp_call_function_single(global->master, 
-							 __newperiod, (void *)cinfo->period_cnt, 0);
-			}
-			local_irq_restore(flags);
-			return 0;
-		} else
-			trace_printk("DBG: enter idle CPU%d\n",
-				     smp_processor_id());
-	} else {
+	} else
 		cpumask_set_cpu(smp_processor_id(), global->active_mask);
-		trace_printk("DBG: exit idle CPU%d-nr=%ld\n", 
-			     smp_processor_id(),
-			     nr_running_cpu(smp_processor_id()));
-	}
 	spin_unlock_irqrestore(&global->lock, flags);
 	return 0;
 }
