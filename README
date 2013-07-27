@@ -6,11 +6,6 @@ Heechul Yun (heechul@illinois.edu)
 Install
 =======
 
-Compile the kernel with CONFIG_SCHED_EVENT_THROTTLE=y enabled.
-After boot with the new kernel, compile the memguard kernel module as follows.
-
-# cd kernel/sched/memguard
-
 # make
 
 Load the module by doing
@@ -59,3 +54,5 @@ Once it is loaded, it provides several configuration interfaces as follows:
 
   last exclusive. last core exclusively use the rest b/w (not in the paper)
   # echo exclusive 1 > /sys/kernel/debug/memguard/control
+
+
