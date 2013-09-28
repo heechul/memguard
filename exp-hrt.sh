@@ -20,7 +20,8 @@ do_hrt_test()
 {
     local master_schedopt="$2"
     local corun_schedopt="$3"
-    local TMPFILE=$4
+    local FILENAME=$4
+    local TMPFILE=/run/$FILENAME
     killall -2 thr hrt bandwidth latency
     killall -9 cpuhog
     if [ "$1" = "cpuhog" ]; then
@@ -42,6 +43,7 @@ do_hrt_test()
     killall -9 cpuhog
     print_settings
     sleep 1
+    cp -v $TMPFILE $FILENAME-`date +%F-%H-%M`.txt
     ./printstat.py --deadline=14 $TMPFILE >> $outputfile
 
     if [ "$1" = "thr" ]; then
@@ -58,18 +60,18 @@ test_isolation()
     rmmod memguard
 
     log_echo ">> no memguard"
-    do_hrt_test xorg "-o fifo" "-o normal" /run/out-org-solo.txt >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" /run/out-org.txt
+    do_hrt_test xorg "-o fifo" "-o normal" out-org-solo >& /dev/null
+    do_hrt_test xorg "-o fifo" "-o normal" out-org
 
     log_echo ">> memguard(excl0)"
     do_init_mb "900 200" 0 0  >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" /run/out-excl0-solo.txt >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" /run/out-excl0.txt
+    do_hrt_test xorg "-o fifo" "-o normal" out-excl0-solo >& /dev/null
+    do_hrt_test xorg "-o fifo" "-o normal" out-excl0
 
     log_echo ">> memguard(excl5)"
     do_init_mb "900 200" 1 5  >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" /run/out-excl5-solo.txt >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" /run/out-excl5.txt
+    do_hrt_test xorg "-o fifo" "-o normal" out-excl5-solo >& /dev/null
+    do_hrt_test xorg "-o fifo" "-o normal" out-excl5
 
     rmmod memguard
 }
