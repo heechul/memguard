@@ -67,17 +67,24 @@ test_isolation()
     hw=$1
 
     log_echo "^^ no memguard"
+    nmon -F $hw-$2-$3-out-org-solo-nmon.dat -s2 -c 3
     do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-org-solo >& /dev/null
+
+    nmon -F $hw-$2-$3-out-org-corun-nmon.dat -s2 -c 3
     do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-org-corun
 
     log_echo "^^ memguard(excl0)"
     do_init_mb "$2 $3" 0 0  >& /dev/null
+    nmon -F $hw-$2-$3-out-excl0-solo-nmon.dat -s2 -c 3
     do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-excl0-solo >& /dev/null
+    nmon -F $hw-$2-$3-out-excl0-corun-nmon.dat -s2 -c 3
     do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-excl0-corun
 
     log_echo "^^ memguard(excl5)"
     do_init_mb "$2 $3" 1 5  >& /dev/null
+    nmon -F $hw-$2-$3-out-excl5-solo-nmon.dat -s2 -c 3
     do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-excl5-solo >& /dev/null
+    nmon -F $hw-$2-$3-out-excl5-corun-nmon.dat -s2 -c 3
     do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-excl5-corun
 
     rmmod memguard
