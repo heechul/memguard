@@ -135,7 +135,7 @@ struct memguard_info {
 static struct memguard_info memguard_info;
 static struct core_info __percpu *core_info;
 
-static char *g_hw_type = "core2";
+static char *g_hw_type = "";
 static int g_period_us = 1000;
 static int g_use_reclaim = 0; /* minimum remaining time to reclaim */
 static int g_use_exclusive = 0;
@@ -455,7 +455,7 @@ static void __newperiod(void *info)
 
 		/* arrived before timer interrupt is called */
 		hrtimer_start_range_ns(&global->hr_timer, new_expire,
-				       0, HRTIMER_MODE_ABS);
+				       0, HRTIMER_MODE_ABS_PINNED);
 		trace_printk("begin new period\n");
 
 		on_each_cpu(period_timer_callback_slave, (void *)new_period, 0);
@@ -838,7 +838,7 @@ static struct perf_event *init_counter(int cpu, int budget)
 	} else if (!strcmp(g_hw_type, "soft")) {
 		sched_perf_hw_attr.type           = PERF_TYPE_SOFTWARE;
 		sched_perf_hw_attr.config         = PERF_COUNT_SW_CPU_CLOCK;
-	}
+	} 
 
 	/* select based on requested event type */
 	sched_perf_hw_attr.sample_period = budget;

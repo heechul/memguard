@@ -1,5 +1,11 @@
 #!/bin/bash
 
+error()
+{
+    echo "ERR: $*"
+    exit
+}
+
 if grep "Core(TM)2" /proc/cpuinfo; then
     arch=core2
     llc_miss_evt="7024"
@@ -16,7 +22,8 @@ if [ "$arch" = "core2" ]; then
 elif [ "$arch" = "snb" ]; then
     RMIN="2400"
 else
-    error "arch is not set"
+    echo "arch is not set. default=1100MB/s"
+    RMIN=1100 
 fi
 
 if uname -a | grep x86_64; then
@@ -30,6 +37,70 @@ outputfile="log.txt"
 echo "ARCH: $arch ($archbit bit)"
 echo "llc_evt: 0x${llc_miss_evt}"
 echo "rmin: $RMIN"
+
+spec2006_xeon_high_rtas13="
+470.lbm
+462.libquantum
+437.leslie3d
+433.milc
+482.sphinx3
+450.soplex
+434.zeusmp"
+
+spec2006_xeon_rta13="
+470.lbm
+462.libquantum
+437.leslie3d
+433.milc
+482.sphinx3
+450.soplex
+434.zeusmp
+483.xalancbmk
+436.cactusADM
+403.gcc
+473.astar
+471.omnetpp
+447.dealII
+481.wrf
+400.perlbench"
+
+spec2006_xeon_high="
+470.lbm
+462.libquantum
+459.GemsFDTD
+437.leslie3d
+433.milc
+482.sphinx3
+429.mcf
+450.soplex
+434.zeusmp
+410.bwaves"
+
+spec2006_xeon_medium="
+483.xalancbmk
+436.cactusADM
+403.gcc
+473.astar
+471.omnetpp
+447.dealII
+481.wrf
+400.perlbench"
+
+spec2006_xeon_low="
+445.gobmk
+454.calculix
+458.sjeng
+401.bzip2
+435.gromacs
+456.hmmer
+444.namd
+464.h264ref
+465.tonto
+453.povray
+416.gamess"
+
+spec2006_xeon_all="$spec2006_xeon_high $spec2006_xeon_medium $spec2006_xeon_low"
+
 
 allspec2006sorted_high="470.lbm
 437.leslie3d
@@ -172,10 +243,16 @@ backup()
     mv *.perf $dir
     mv *.trace $dir
     mv *.eps $dir
-    mv *.scr $dir
+#    mv *.scr $dir
     mv C*.dat $dir
     mv /run/out-*.txt $dir
     chown -R heechul.heechul $dir
+}
+
+log_echo()
+{
+   echo "LOG: $*"
+   echo "$*" >> $outputfile
 }
 
 finish()
@@ -185,18 +262,6 @@ finish()
     rmmod memguard
     chown heechul.heechul $outputfile
     log_echo "============================="
-    exit
-}
-
-log_echo()
-{
-   echo "LOG: $*"
-   echo $* >> $outputfile
-}
-
-error()
-{
-    echo "ERR: $*"
     exit
 }
 
@@ -324,7 +389,8 @@ do_init()
     echo "loading module budget=$budgets"
     lsmod | grep memguard && rmmod memguard
 
-    insmod ./memguard.ko $option
+    insmod ./memguard.ko $option || error "Load failed"
+
     echo "option: $option"
     echo "$budgets|reclaim=$reclaim|$codebase" >> $outputfile
 
@@ -467,13 +533,13 @@ run_bench()
     local core=$2
 
     if [ "$name" = "000.bandwidth" ]; then
-	perf stat -e instructions:u -o C$core.$name.perf ./bandwidth -a read -c $core -t 10 &
+	perf stat -e instructions:u -o C$core.$name.perf ./bandwidth -a read -c $core -t 10
     elif [ "$name" = "000.latency" ]; then
-	perf stat -e instructions:u -o C$core.$name.perf ./latency -m 32768 -i 10000 -c $core &    
+	perf stat -e instructions:u -o C$core.$name.perf ./latency -m 32768 -i 10000 -c $core 
     elif [ "$name" = "000.cpuhog" ]; then
-	taskset -c $core perf stat -e instructions:u -o C$core.$name.perf ./cpuhog &
+	taskset -c $core perf stat -e instructions:u -o C$core.$name.perf ./cpuhog
     else
-	taskset -c $core perf stat -e instructions:u -o C$core.$name.perf /ssd/cpu2006/bin/specinvoke -d /ssd/cpu2006/benchspec/CPU2006/$name/run/run_base_ref_gcc43-${archbit}bit.0000 -e speccmds.err -o speccmds.stdout -f speccmds.cmd -C -q &
+	taskset -c $core perf stat -e instructions:u -o C$core.$name.perf /ssd/cpu2006/bin/specinvoke -d /ssd/cpu2006/benchspec/CPU2006/$name/run/run_base_ref_gcc43-${archbit}bit.0000 -e speccmds.err -o speccmds.stdout -f speccmds.cmd -C -q
     fi
 }
 
@@ -493,7 +559,7 @@ do_exp_1core()
     local bench=$1
     local core=$2
     
-    run_bench $bench $core
+    run_bench $bench $core &
 
     echo $@ >> $outputfile
     sleep 10
@@ -527,7 +593,7 @@ do_exp_ncore()
     for var in "$@"
     do
 	echo "Run $var at $i"
-	run_bench $var $i
+	run_bench $var $i &
 	i=`expr $i + $intval`
     done
 

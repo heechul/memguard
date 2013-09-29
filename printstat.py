@@ -39,7 +39,7 @@ def main():
         tokens = line.split();
     # print tokens
         try:
-            num  = int(tokens[1])
+            num  = int(tokens[0])
         except ValueError:
             break
         items[len(items):] = [num]

@@ -1,12 +1,12 @@
 #!/bin/bash
-. functions
+. ./functions
 
 outputfile=hrt.txt
 
 init_system
 rmmod memguard
 set_cpus "1 1 0 0"
-enable_prefetcher
+# enable_prefetcher
 
 log_echo "llc:$llc_miss_evt arch:${archbit}bit"
 log_echo "RMIN: $RMIN"
@@ -36,15 +36,18 @@ do_hrt_test()
     # echo "[start]" > /sys/kernel/debug/tracing/trace_marker
     # echo "[finish]" > /sys/kernel/debug/tracing/trace_marker
 
-    trace-cmd record -e sched:sched_switch \
+    # trace-cmd record -e sched:sched_switch \
 	./hrt -c 0 -i 1000 -C 12 -I 10 $master_schedopt > $TMPFILE \
 	|| error "exec failed"
     killall -2 thr hrt bandwidth latency cpuhog matrix
     killall -9 cpuhog
     print_settings
     sleep 1
-    cp -v $TMPFILE $FILENAME-`date +%F-%H-%M`.txt
-    ./printstat.py --deadline=14 $TMPFILE >> $outputfile
+    cp -v $TMPFILE $FILENAME-`date +%F-%H-%M`.dat
+    awk '{ print $2 }' $TMPFILE > $TMPFILE.dat
+    ./printstat.py --deadline=14 $TMPFILE.dat >> $outputfile
+    cp $TMPFILE rawdata.dat
+    gnuplot histo.scr > $FILENAME-`date +%F-%H-%M`.eps
 
     if [ "$1" = "thr" ]; then
 	bwsum=0
@@ -59,22 +62,23 @@ test_isolation()
 {
     rmmod memguard
 
-    log_echo ">> no memguard"
+    log_echo "^^ no memguard"
     do_hrt_test xorg "-o fifo" "-o normal" out-org-solo >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" out-org
+    do_hrt_test xorg "-o fifo" "-o normal" out-org-corun
 
-    log_echo ">> memguard(excl0)"
+    log_echo "^^ memguard(excl0)"
     do_init_mb "900 200" 0 0  >& /dev/null
     do_hrt_test xorg "-o fifo" "-o normal" out-excl0-solo >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" out-excl0
+    do_hrt_test xorg "-o fifo" "-o normal" out-excl0-corun
 
-    log_echo ">> memguard(excl5)"
+    log_echo "^^ memguard(excl5)"
     do_init_mb "900 200" 1 5  >& /dev/null
     do_hrt_test xorg "-o fifo" "-o normal" out-excl5-solo >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" out-excl5
+    do_hrt_test xorg "-o fifo" "-o normal" out-excl5-corun
 
     rmmod memguard
 }
 
 test_isolation
 finish
+rmmod memguard

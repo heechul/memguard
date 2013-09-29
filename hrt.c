@@ -232,12 +232,6 @@ int main(int argc, char* argv[])
 
 	/* allocate */
 	list = (struct item *)malloc(sizeof(struct item) * workingset_size + CACHE_LINE_SIZE);
-#if 1
-	list = (struct item *)
-		((((unsigned long)list + CACHE_LINE_SIZE) >> CACHE_LINE_BITS) << CACHE_LINE_BITS);
-#endif
-
-	fprintf(stderr, "addr: 0x%x   aligned?:%s\n", (unsigned)list, (((unsigned)list)%64==0)?"yes":"no");
 	for (i = 0; i < workingset_size; i++) {
 		list[i].data = i;
 		list[i].in_use = 0;
@@ -248,25 +242,23 @@ int main(int argc, char* argv[])
 
 	ftrace_write("PGM: begin permutation\n");
 	/* initialize. TODO: random permutation algorithm */
-	i = workingset_size;
-	while (i > 0) {
-		int idx;
-		int j;
-		if (serial)
-			idx = workingset_size - i;
-		else
-			idx = rand() % workingset_size;
+	int *perm = (int *)malloc(workingset_size * sizeof(int));
+	for (i = 0; i < workingset_size; i++)
+		perm[i] = i;
 
-		for (j = idx; j < idx + workingset_size; j++) {
-			int idx2 = j % workingset_size;
-			if (!list[idx2].in_use) {
-				list_add(&list[idx2].list, &head);
-				list[idx2].in_use = 1;
-				i--;
-				break;
-			}
+	if (!serial) {
+		for (i = 0; i < workingset_size; i++) {
+			int tmp = perm[i];
+			int next = rand() % workingset_size;
+			perm[i] = perm[next];
+			perm[next] = tmp;
 		}
 	}
+	for (i = 0; i < workingset_size; i++) {
+		list_add(&list[perm[i]].list, &head);
+		// printf("%d\n", perm[i]);
+	}
+
 	ftrace_write("PGM: end permutation\n");
 	/* 12.623648 - 8MB access time */
 	compute_load = (int)((double)compute_ms * workingset_size / 12.623648); 
@@ -292,8 +284,10 @@ int main(int argc, char* argv[])
 				ftrace_write("PGM: iter %d took %lld ns\n", i, tmpdiff);
 
 				if (i >= 0) {
-					printf("%4d %lld\n", i, tmpdiff);
-					fprintf(stderr, "%4d %lld\n", i, tmpdiff);
+					printf("%4d %lld\n", i, (long long)
+					       tmpdiff);
+					fprintf(stderr, "%4d %lld\n", i, 
+						(long long) tmpdiff);
 				}
 				nsdiff += tmpdiff;
 
@@ -312,9 +306,11 @@ out:
 
 	avglat = (int64_t)(nsdiff/cnt); 
 	fprintf(stderr, "duration %lldus\naverage %lldns | ", 
-		nsdiff/1000, avglat);
+		(long long)nsdiff/1000, (long long)avglat);
 	fprintf(stderr, "bandwidth %lld MB (%lld MiB)/s\n", 
-	       (int64_t)64*1000/avglat, 
-	       (int64_t)64*1000000000/avglat/1024/1024);
-	fprintf(stderr, "readsum  %lld\n", readsum);
+		(long long)64*1000/avglat, 
+		(long long)64*1000000000/avglat/1024/1024);
+	fprintf(stderr, "readsum  %lld\n", (unsigned long long)readsum);
+
+	return 0;
 }
