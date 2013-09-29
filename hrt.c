@@ -290,8 +290,6 @@ int main(int argc, char* argv[])
 
 		double remain_us = (interval_ms * 1000 - tmpdiff / 1000);
 		if (remain_us > 0) {
-			printf("interval_ms = %.1f, sleep %.1f us\n", 
-			       interval_ms, remain_us);
 			usleep((useconds_t)remain_us);
 		}
 		clock_gettime(CLOCK_REALTIME, &start);

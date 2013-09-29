@@ -18,12 +18,12 @@ else
 fi
 
 if [ "$arch" = "core2" ]; then
-    RMIN="1100"
+    RMIN="1200"
 elif [ "$arch" = "snb" ]; then
     RMIN="2400"
 else
     echo "arch is $arch. default=1100MB/s"
-    RMIN=1100 
+    RMIN=1200 
 fi
 
 if uname -a | grep x86_64; then
@@ -308,7 +308,7 @@ set_cpus()
 	echo $v > /sys/devices/system/cpu/cpu${idx}/online
 	echo "performance" > /sys/devices/system/cpu/cpu${idx}/cpufreq/scaling_governor
 	idx=`expr $idx + 1`
-    done
+    done >& /dev/null
 }
 
 parse_log()
@@ -334,12 +334,12 @@ init_cgroup()
     for t in `cat /sys/fs/cgroup/tasks`; do
 	echo $t > /sys/fs/cgroup/system/tasks
     done >& /dev/null
-    cat /sys/fs/cgroup/system/tasks
+    # cat /sys/fs/cgroup/system/tasks
     echo 1024 > /sys/fs/cgroup/system/cpu.shares
 
     [ ! -d "/sys/fs/cgroup/experiment" ] && mkdir /sys/fs/cgroup/experiment
     
-    cat /sys/devices/system/cpu/online > cpuset.cpus
+    cat /sys/devices/system/cpu/online > /sys/fs/cgroup/experiment/cpuset.cpus
     echo 0 > /sys/fs/cgroup/experiment/cpuset.mems
     echo $$ > /sys/fs/cgroup/experiment/tasks
     echo 32768 > /sys/fs/cgroup/experiment/cpu.shares

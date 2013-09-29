@@ -100,15 +100,15 @@ echo 2 > /sys/fs/cgroup/system/cpuset.cpus
 set_cpus "1 0 1 0"
 disable_prefetcher
 init_cgroup
-test_isolation "hw1" 550 550
+test_isolation "hw1" 600 600
 
 # case 2: private, prefetcher
 echo 2 > /sys/fs/cgroup/system/cpuset.cpus
 set_cpus "1 0 1 0"
 enable_prefetcher
 init_cgroup
-test_isolation "hw2" 550 550
-test_isolation "hw2" 900 200
+test_isolation "hw2" 600 600
+test_isolation "hw2" 900 300
 
 # case 3: shared, prefetcher
 set_cpus "1 1 1 1"
@@ -122,7 +122,7 @@ test_isolation "hw3" 900 200
 set_cpus "1 1 0 0"
 disable_prefetcher
 init_cgroup
-test_isolation "hw4" 900 200
+test_isolation "hw4" 900 300
 
 finish
 rmmod memguard
