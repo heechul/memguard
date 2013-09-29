@@ -328,11 +328,12 @@ init_cgroup()
     mount | grep cgroup || mount -t cgroup xxx /sys/fs/cgroup
     [ ! -d "/sys/fs/cgroup/system" ] && mkdir /sys/fs/cgroup/system
     
-    cat /sys/devices/system/cpu/online > cpuset.cpus || error "fail"
-    echo 0 > cpuset.mems
+    cat /sys/devices/system/cpu/online > /sys/fs/cgroup/system/cpuset.cpus
+    echo 0 > /sys/fs/cgroup/system/cpuset.mems
+
     for t in `cat /sys/fs/cgroup/tasks`; do
 	echo $t > /sys/fs/cgroup/system/tasks
-    done
+    done >& /dev/null
     cat /sys/fs/cgroup/system/tasks
     echo 1024 > /sys/fs/cgroup/system/cpu.shares
 

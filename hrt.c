@@ -39,6 +39,7 @@
  **************************************************************************/
 #define CACHE_LINE_SIZE 64
 #define CACHE_LINE_BITS 6
+#define NUM_FRAMES 5
 
 /**************************************************************************
  * Public Types
@@ -136,15 +137,14 @@ void quit(int param)
 
 int main(int argc, char* argv[])
 {
-	struct item *list;
+	struct item *list[NUM_FRAMES];
 	int workingset_size = 1024;
 
 	int compute_load;
-	float compute_ms = 10.0;
 	float interval_ms = 0.0;
 
 	int i, j;
-	struct list_head head;
+	struct list_head head[NUM_FRAMES];
 	struct list_head *pos;
 	struct timespec start, end;
 	uint64_t nsdiff;
@@ -203,16 +203,12 @@ int main(int argc, char* argv[])
 				}
 			}
 			break;
-		case 'C': /* compute_ms */
-			compute_ms = strtof(optarg, NULL);
-			fprintf(stderr, "C(compute)=%f(ms)\n", compute_ms);
-			break;
 		case 'i': /* iterations */
 			repeat = strtol(optarg, NULL, 0);
 			fprintf(stderr, "repeat=%d\n", repeat);
 			break;
 
-		case 'I': /* interval */
+		case 'I': /* interval (period) */
 			interval_ms = strtof(optarg, NULL);
 			fprintf(stderr, "I(interval)=%f(ms)\n", interval_ms);
 			break;
@@ -228,14 +224,19 @@ int main(int argc, char* argv[])
 	workingset_size = g_mem_size / CACHE_LINE_SIZE;
 	srand(0);
 
-	INIT_LIST_HEAD(&head);
+
 
 	/* allocate */
-	list = (struct item *)malloc(sizeof(struct item) * workingset_size + CACHE_LINE_SIZE);
-	for (i = 0; i < workingset_size; i++) {
-		list[i].data = i;
-		list[i].in_use = 0;
-		INIT_LIST_HEAD(&list[i].list);
+	for (i = 0; i < NUM_FRAMES; i++) {
+		INIT_LIST_HEAD(&head[i]);
+		list[i] = (struct item *)malloc(sizeof(struct item) 
+					     * workingset_size + CACHE_LINE_SIZE);
+
+		for (j = 0; j < workingset_size; j++) {
+			list[i][j].data = j;
+			list[i][j].in_use = 0;
+			INIT_LIST_HEAD(&list[i][j].list);
+		}
 		// printf("%d 0x%x\n", list[i].data, &list[i].data);
 	}
 	fprintf(stderr, "allocated: wokingsetsize=%d entries\n", workingset_size);
@@ -254,59 +255,48 @@ int main(int argc, char* argv[])
 			perm[next] = tmp;
 		}
 	}
-	for (i = 0; i < workingset_size; i++) {
-		list_add(&list[perm[i]].list, &head);
-		// printf("%d\n", perm[i]);
+	for (i = 0; i < NUM_FRAMES; i++) {
+		for (j = 0; j < workingset_size; j++) {
+			list_add(&list[i][perm[j]].list, &head[i]);
+		}
 	}
-
 	ftrace_write("PGM: end permutation\n");
-	/* 12.623648 - 8MB access time */
-	compute_load = (int)((double)compute_ms * workingset_size / 12.623648); 
-
-	fprintf(stderr, "initialized: compute_ms(%f), interval_ms(%f), compute_load(%d)\n",
-		compute_ms, interval_ms, compute_load);
 
 	/* add marker */
 	/* actual access */
-	nsdiff = 0; j = 0; i = -1;
+	nsdiff = 0; j = 0; i = 0; 
 	quit_signal = 0;
 	cnt = 0;
 	ftrace_write("PGM: begin main loop\n");
 	clock_gettime(CLOCK_REALTIME, &start);
 	while (1) {
 		uint64_t tmpdiff;
-		list_for_each(pos, &head) {
+		list_for_each(pos, &head[i % NUM_FRAMES]) {
 			struct item *tmp = list_entry(pos, struct item, list);
 			readsum += tmp->data;
-			if (++j == compute_load) {
-				clock_gettime(CLOCK_REALTIME, &end);
-				tmpdiff = get_elapsed(&start, &end);
-				ftrace_write("PGM: iter %d took %lld ns\n", i, tmpdiff);
-
-				if (i >= 0) {
-					printf("%4d %lld\n", i, (long long)
-					       tmpdiff);
-					fprintf(stderr, "%4d %lld\n", i, 
-						(long long) tmpdiff);
-				}
-				nsdiff += tmpdiff;
-
-				if (++i == repeat || quit_signal)
-					goto out;
-
-				j = 0; 
-
-				useconds_t remain_us = (useconds_t)
-					(interval_ms * 1000 - tmpdiff / 1000);
-				if (remain_us > 0)
-					usleep(remain_us);
-				clock_gettime(CLOCK_REALTIME, &start);
-			}
 			cnt++;
 		}
+		clock_gettime(CLOCK_REALTIME, &end);
+		tmpdiff = get_elapsed(&start, &end);
+		ftrace_write("PGM: iter %d took %lld ns\n", i, tmpdiff);
+
+		printf("%4d %lld\n", i, (long long) tmpdiff);
+		fprintf(stderr, "%4d %lld\n", i, (long long) tmpdiff);
+
+		nsdiff += tmpdiff;
+
+		if (++i == repeat || quit_signal)
+			goto out;
+
+		double remain_us = (interval_ms * 1000 - tmpdiff / 1000);
+		if (remain_us > 0) {
+			printf("interval_ms = %.1f, sleep %.1f us\n", 
+			       interval_ms, remain_us);
+			usleep((useconds_t)remain_us);
+		}
+		clock_gettime(CLOCK_REALTIME, &start);
 	}
 out:
-
 	avglat = (int64_t)(nsdiff/cnt); 
 	fprintf(stderr, "duration %lldus\naverage %lldns | ", 
 		(long long)nsdiff/1000, (long long)avglat);
