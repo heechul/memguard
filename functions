@@ -22,7 +22,7 @@ if [ "$arch" = "core2" ]; then
 elif [ "$arch" = "snb" ]; then
     RMIN="2400"
 else
-    echo "arch is not set. default=1100MB/s"
+    echo "arch is $arch. default=1100MB/s"
     RMIN=1100 
 fi
 
@@ -277,8 +277,10 @@ check_root()
 
 disable_prefetcher()
 {
+    [ "$arch" = "core2" ] || return
     check_root
     modprobe msr
+
     [ -f "./disable_core2_prefetch" ] || error "Failed to disable prefetcher"
     ./disable_core2_prefetch >& /dev/null 
     log_echo "disable hardware prefetcher"
@@ -286,6 +288,8 @@ disable_prefetcher()
 
 enable_prefetcher()
 {
+    [ "$arch" = "core2" ] || return
+
     check_root
     modprobe msr
     [ -f "./enable_core2_prefetch" ] || error "Failed to enable prefetcher"
@@ -322,29 +326,25 @@ parse_log()
 init_cgroup()
 {
     mount | grep cgroup || mount -t cgroup xxx /sys/fs/cgroup
-    mkdir /sys/fs/cgroup/system
-    pushd /sys/fs/cgroup/system
+    [ ! -d "/sys/fs/cgroup/system" ] && mkdir /sys/fs/cgroup/system
+    
     cat /sys/devices/system/cpu/online > cpuset.cpus || error "fail"
     echo 0 > cpuset.mems
     for t in `cat /sys/fs/cgroup/tasks`; do
-	echo $t > tasks >& /dev/null || echo "PID $t failed" 
+	echo $t > /sys/fs/cgroup/system/tasks
     done
-    cat tasks
-    echo 1024 > cpu.shares
-    popd
+    cat /sys/fs/cgroup/system/tasks
+    echo 1024 > /sys/fs/cgroup/system/cpu.shares
 
-    mkdir /sys/fs/cgroup/experiment
-    pushd /sys/fs/cgroup/experiment
-    cat /sys/devices/system/cpu/online > cpuset.cpus
-    echo 0 > cpuset.mems
-    echo $$ > tasks
-    echo 32768 > cpu.shares
-
-    tasks=`cat tasks`
-    echo "pid of exp. bash: $tasks" 
+    [ ! -d "/sys/fs/cgroup/experiment" ] && mkdir /sys/fs/cgroup/experiment
     
-    popd
-} > /dev/null
+    cat /sys/devices/system/cpu/online > cpuset.cpus
+    echo 0 > /sys/fs/cgroup/experiment/cpuset.mems
+    echo $$ > /sys/fs/cgroup/experiment/tasks
+    echo 32768 > /sys/fs/cgroup/experiment/cpu.shares
+    tasks=`cat /sys/fs/cgroup/experiment/tasks`
+    echo "pid of exp. bash: $tasks" 
+} 
 
 # create cgroup. if exist, delete and re-create.
 # do not assign tasks, address mask, and pattern:
