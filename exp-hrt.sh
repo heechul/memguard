@@ -116,7 +116,7 @@ echo 1 > /sys/fs/cgroup/system/cpuset.cpus
 set_cpus "1 1 0 0"
 enable_prefetcher
 init_cgroup
-test_isolation "hw3" 900 200
+test_isolation "hw3" 900 300
 
 # case 4: shared, no prefetcher
 set_cpus "1 1 0 0"
