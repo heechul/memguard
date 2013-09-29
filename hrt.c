@@ -295,8 +295,11 @@ int main(int argc, char* argv[])
 					goto out;
 
 				j = 0; 
-				if (interval_ms > 0)
-					usleep(interval_ms*1000);
+
+				useconds_t remain_us = (useconds_t)
+					(interval_ms * 1000 - tmpdiff / 1000);
+				if (remain_us > 0)
+					usleep(remain_us);
 				clock_gettime(CLOCK_REALTIME, &start);
 			}
 			cnt++;

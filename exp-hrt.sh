@@ -5,8 +5,6 @@ outputfile=hrt.txt
 
 init_system
 rmmod memguard
-set_cpus "1 1 0 0"
-# enable_prefetcher
 
 log_echo "llc:$llc_miss_evt arch:${archbit}bit"
 log_echo "RMIN: $RMIN"
@@ -62,23 +60,41 @@ test_isolation()
 {
     rmmod memguard
 
+    hw=$1
+
     log_echo "^^ no memguard"
-    do_hrt_test xorg "-o fifo" "-o normal" out-org-solo >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" out-org-corun
+    do_hrt_test xorg "-o fifo" "-o normal" $hw-out-org-solo >& /dev/null
+    do_hrt_test xorg "-o fifo" "-o normal" $hw-out-org-corun
 
     log_echo "^^ memguard(excl0)"
-    do_init_mb "900 200" 0 0  >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" out-excl0-solo >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" out-excl0-corun
+    do_init_mb "$2 $3" 0 0  >& /dev/null
+    do_hrt_test xorg "-o fifo" "-o normal" $hw-out-excl0-solo >& /dev/null
+    do_hrt_test xorg "-o fifo" "-o normal" $hw-out-excl0-corun
 
     log_echo "^^ memguard(excl5)"
-    do_init_mb "900 200" 1 5  >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" out-excl5-solo >& /dev/null
-    do_hrt_test xorg "-o fifo" "-o normal" out-excl5-corun
+    do_init_mb "$2 $3" 1 5  >& /dev/null
+    do_hrt_test xorg "-o fifo" "-o normal" $hw-out-excl5-solo >& /dev/null
+    do_hrt_test xorg "-o fifo" "-o normal" $hw-out-excl5-corun
 
     rmmod memguard
 }
 
-test_isolation
+# case 1: private, no prefetcher
+echo 2 > /sys/fs/cgroup/system/cpuset.cpus
+set_cpus "1 0 1 0"
+disable_prefetcher
+test_isolation "hw1" 550 550
+
+# case 2: private, prefetcher
+set_cpus "1 0 1 0"
+enable_prefetcher
+test_isolation "hw2" 550 550
+
+# case 3: shared, prefetcher
+set_cpus "1 1 0 0"
+echo 1 > /sys/fs/cgroup/system/cpuset.cpus
+enable_prefetcher
+test_isolation "hw3" 900 200
+
 finish
 rmmod memguard

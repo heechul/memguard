@@ -259,6 +259,8 @@ finish()
 {
     sed 's/,//g' $outputfile | sed 's/ /,/g' > ${outputfile%.txt}.csv
     backup backup-`date +%F-%H-%M`
+    rm -f backup-last
+    ln -s backup-`date +%F-%H-%M` backup-last
     rmmod memguard
     chown heechul.heechul $outputfile
     log_echo "============================="

@@ -838,7 +838,7 @@ static struct perf_event *init_counter(int cpu, int budget)
 	} else if (!strcmp(g_hw_type, "soft")) {
 		sched_perf_hw_attr.type           = PERF_TYPE_SOFTWARE;
 		sched_perf_hw_attr.config         = PERF_COUNT_SW_CPU_CLOCK;
-	} 
+	}
 
 	/* select based on requested event type */
 	sched_perf_hw_attr.sample_period = budget;
@@ -848,7 +848,7 @@ static struct perf_event *init_counter(int cpu, int budget)
 		&sched_perf_hw_attr,
 		cpu, NULL,
 		event_overflow_callback
-#if LINUX_VERSION_CODE > KERNEL_VERSION(3, 2, 0) 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(3, 2, 0)
 		,NULL
 #endif
 		);
