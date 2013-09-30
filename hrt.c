@@ -280,8 +280,9 @@ int main(int argc, char* argv[])
 		tmpdiff = get_elapsed(&start, &end);
 		ftrace_write("PGM: iter %d took %lld ns\n", i, tmpdiff);
 
-		printf("%4d %lld\n", i, (long long) tmpdiff);
-		fprintf(stderr, "%4d %lld\n", i, (long long) tmpdiff);
+		printf("%4d %.2f\n", i, (double) tmpdiff/1000000);
+		fprintf(stderr, "%4d %.2f  --------------------------------------------------------------------------------------------------------\n",
+			i, (double) tmpdiff/1000000);
 
 		nsdiff += tmpdiff;
 

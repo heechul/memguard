@@ -22,7 +22,7 @@ def main():
         if opt in ("-h", "--help"):
             print args[0] + " [-d <deadline (ms)>]"
         elif opt in ("-d", "--deadline"):
-            deadline = int(val) * 1000000
+            deadline = float(val)
         else:
             assert False, "unhandled option"
 
@@ -39,7 +39,7 @@ def main():
         tokens = line.split();
     # print tokens
         try:
-            num  = int(tokens[0])
+            num  = float(tokens[0])
         except ValueError:
             break
         items[len(items):] = [num]
