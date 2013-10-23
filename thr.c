@@ -82,7 +82,7 @@ void quit(int param)
 	float bw;
 	float dur = get_usecs() - g_start;
 	dur_in_sec = (float)dur / 1000000;
-	printf("g_nread(bytes read) = %lld\n", g_nread);
+	printf("g_nread(bytes read) = %ld\n", g_nread);
 	printf("elapsed = %.2f sec ( %.0f usec )\n", dur_in_sec, dur);
 	bw = (float)g_nread / dur_in_sec / 1024 / 1024;
 	printf("B/W = %.2f MB/s | ", bw);

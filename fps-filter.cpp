@@ -98,7 +98,7 @@ void print_fps()
 {
 	int64_t avgtime = t.tot / t.cnt;
 	float fps = (float)1000000000/avgtime;
-	fprintf(stdout, "fps: %.1f %d MB/s avg/min/max: %lld/%lld/%lld(us) miss:%d%%(%d/%lld)\n", fps, (int)(fps*frame_width * frame_height*sizeof(color_rgb_t)/1024/1024),
+	fprintf(stdout, "fps: %.1f %d MB/s avg/min/max: %ld/%ld/%ld(us) miss:%d%%(%d/%ld)\n", fps, (int)(fps*frame_width * frame_height*sizeof(color_rgb_t)/1024/1024),
 	       avgtime/1000, t.min/1000, t.max/1000, t.miss*100/(int)t.cnt, t.miss, t.cnt);
 	fflush(stdout);
 }
@@ -324,7 +324,7 @@ int main(int argc, char* argv[])
 		t.cnt ++;
 		if (verbose && j >= 0) {
 		    // printf("%4d %lld\n", j, t.cur);
-		    fprintf(stdout, "%4d %lld\n", j, t.cur);
+		    fprintf(stdout, "%4d %ld\n", j, t.cur);
 		}
 		if (!verbose && t.tot > 1000000000) {
 			print_fps();
