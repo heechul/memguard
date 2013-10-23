@@ -34,7 +34,6 @@ do_experiment()
     for b in $benchb; do
 	echo $b
 	echo "" > /sys/kernel/debug/tracing/trace
-	echo "flush" > /sys/kernel/debug/color_page_alloc/control
 	taskset -c $corea perf stat -e r$llc_miss_evt:u,instructions:u -o $b.perf /ssd/cpu2006/bin/specinvoke -d /ssd/cpu2006/benchspec/CPU2006/$b/run/run_base_ref_gcc43-${archbit}bit.0000 -e speccmds.err -o speccmds.stdout -f speccmds.cmd -C -q &
 	sleep 10
 	kill -9 `ps x | grep gcc | grep -v perf | awk '{ print $1 }'`
