@@ -2,21 +2,24 @@ MemGuard: Memory Bandwidth Reservation System
 
 Heechul Yun (heechul@illinois.edu)
 
+* Preparation
+  
+Recommended kernel settings are as follows:
 
-Install
-=======
+  CONFIG_ACPI_PROCESSOR=n
+  CONFIG_CPU_IDLE=n
 
-# make
+* Install
 
-Load the module by doing
+  # make
+  # insmod memguard.ko	
+    <-- Load the module by doing
 
-# insmod memguard.ko
+* Usages
 
-Usages
-======
-Once it is loaded, it provides several configuration interfaces as follows:
+Once the module is loaded, it provides several configuration interfaces as follows:
 
-- per-core bandwidth assignment.
+** per-core bandwidth assignment.
 
   assign 900,100,100,100 MB/s for Core 0,1,2,3
   # echo mb 900 100 100 100 > /sys/kernel/debug/memguard/limit
@@ -27,7 +30,7 @@ Once it is loaded, it provides several configuration interfaces as follows:
   assign weights(1:2:4:8) for Core 0,1,2,3
   # echo 1 2 4 8 > /sys/kernel/debug/memguard/share
 
-- per-task mode (use task priority as core's memory weight)
+** per-task mode (use task priority as core's memory weight)
 
   enable per-task mode
   # echo taskprio 1 > /sys/kernel/debug/memguard/control
@@ -35,11 +38,11 @@ Once it is loaded, it provides several configuration interfaces as follows:
   disble per-task mode (=per-core mode)
   # echo taskprio 0 > /sys/kernel/debug/memguard/control
 
-- set maxbw (r_min in the paper)
+** set maxbw (r_min in the paper)
 
   # echo maxbw 1200 > /sys/kernel/debug/memesched/control
 
-- reclaim control
+** reclaim control
 
   enable
   # echo reclaim 1 > /sys/kernel/debug/memesched/control
@@ -47,7 +50,7 @@ Once it is loaded, it provides several configuration interfaces as follows:
   disable
   # echo reclaim 0 > /sys/kernel/debug/memesched/control
 
-- exclusive mode control
+** exclusive mode control
 
   proportional share mode (see TC submission)  
   # echo exclusive 5 > /sys/kernel/debug/memguard/control
