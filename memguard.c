@@ -51,13 +51,13 @@
 #define CACHE_LINE_SIZE 64
 
 #if USE_DEBUG
+#  define DEBUG(x) x 
 #  define DEBUG_RECLAIM(x) x
 #  define DEBUG_USER(x) x
-#  define DEBUG_P4080(x) x
 #else
+#  define DEBUG(x) 
 #  define DEBUG_RECLAIM(x)
 #  define DEBUG_USER(x)
-#  define DEBUG_P4080(x)
 #endif
 
 /**************************************************************************
@@ -170,7 +170,7 @@ extern int idle_cpu(int cpu);
 /**************************************************************************
  * Local Function Prototypes
  **************************************************************************/
-static int self_test(int cpu);
+static int self_test(void);
 static void __reset_stats(void *info);
 static void period_timer_callback_slave(void *info);
 enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer);
@@ -348,12 +348,12 @@ void update_statistics(struct core_info *cinfo)
 		cinfo->exclusive_mode = 0;
 		cinfo->overall.exclusive++;
 	}
-	trace_printk("%lld %d %p CPU%d org: %d cur: %d excl(%d): %lld\n",
-		     new, used, cinfo->throttled_task,
-		     smp_processor_id(), 
-		     cinfo->budget,
-		     cinfo->cur_budget,
-		     g_use_exclusive, exclusive_vtime);
+	DEBUG(trace_printk("%lld %d %p CPU%d org: %d cur: %d excl(%d): %lld\n",
+			   new, used, cinfo->throttled_task,
+			   smp_processor_id(), 
+			   cinfo->budget,
+			   cinfo->cur_budget,
+			   g_use_exclusive, exclusive_vtime));
 }
 
 
@@ -436,7 +436,7 @@ static void __unthrottle_core(void *info)
 
 		cinfo->throttled_task = NULL;
 		smp_wmb();
-		trace_printk("exclusive mode begin\n");
+		DEBUG_RECLAIM(trace_printk("exclusive mode begin\n"));
 	}
 }
 
@@ -456,7 +456,7 @@ static void __newperiod(void *info)
 		/* arrived before timer interrupt is called */
 		hrtimer_start_range_ns(&global->hr_timer, new_expire,
 				       0, HRTIMER_MODE_ABS_PINNED);
-		trace_printk("begin new period\n");
+		DEBUG(trace_printk("begin new period\n"));
 
 		on_each_cpu(period_timer_callback_slave, (void *)new_period, 0);
 	} else
@@ -554,10 +554,10 @@ static void memguard_process_overflow(struct irq_work *entry)
 			if (target_cpu == smp_processor_id()) {
 				cinfo->exclusive_mode = 1;
 				cinfo->exclusive_time = ktime_get();
-				trace_printk("exclusive%d mode begin"
-					     "vtime: %lld\n", 
-					     cinfo->exclusive_mode,
-					     cinfo->exclusive_vtime);
+				DEBUG_RECLAIM(trace_printk("exclusive%d mode begin"
+							   "vtime: %lld\n", 
+							   cinfo->exclusive_mode,
+							   cinfo->exclusive_vtime));
 				return;
 			}
 			smp_call_function_single(
@@ -658,9 +658,9 @@ static void period_timer_callback_slave(void *info)
 	cpumask_set_cpu(cpu, global->active_mask);
 	spin_unlock(&global->lock);
 
-	trace_printk("%p|New period %ld. global->budget=%d\n",
-		     cinfo->throttled_task,
-		     cinfo->period_cnt, global->budget);
+	DEBUG(trace_printk("%p|New period %ld. global->budget=%d\n",
+			   cinfo->throttled_task,
+			   cinfo->period_cnt, global->budget));
 	
 	/* update statistics. */
 	update_statistics(cinfo);
@@ -671,7 +671,7 @@ static void period_timer_callback_slave(void *info)
 		if (prio < 0) 
 			prio = 0;
 		cinfo->weight = prio_to_weight[prio];
-		trace_printk("Task WGT: %d prio:%d\n", cinfo->weight, prio);
+		DEBUG(trace_printk("Task WGT: %d prio:%d\n", cinfo->weight, prio));
 	}
 
 	/* new budget assignment from user */
@@ -685,9 +685,9 @@ static void period_timer_callback_slave(void *info)
 			wsum += per_cpu_ptr(core_info, i)->weight;
 		cinfo->budget = 
 			div64_u64((u64)global->max_budget*cinfo->weight, wsum);
-		trace_printk("WGT: budget:%d/%d weight:%d/%d\n",
-			     cinfo->budget, global->max_budget,
-			     cinfo->weight, wsum);
+		DEBUG(trace_printk("WGT: budget:%d/%d weight:%d/%d\n",
+				   cinfo->budget, global->max_budget,
+				   cinfo->weight, wsum));
 	} else if (cinfo->limit > 0) {
 		/* limit mode */
 		cinfo->budget = cinfo->limit;
@@ -721,13 +721,13 @@ static void period_timer_callback_slave(void *info)
 	/* per-task donation policy */
 	if (!g_use_reclaim || rt_task(target)) {
 		cinfo->cur_budget = cinfo->budget;
-		trace_printk("HRT or !g_use_reclaim: don't donate\n");
+		DEBUG(trace_printk("HRT or !g_use_reclaim: don't donate\n"));
 	} else if (target->policy == SCHED_BATCH || 
 		   target->policy == SCHED_IDLE) {
 		/* Non rt task: donate all */
 		donate_budget(cinfo->period_cnt, cinfo->budget);
 		cinfo->cur_budget = 0;
-		trace_printk("NonRT: donate all %d\n", cinfo->budget);
+		DEBUG(trace_printk("NonRT: donate all %d\n", cinfo->budget));
 	} else if (target->policy == SCHED_NORMAL) {
 		BUG_ON(rt_task(target));
 		if (cinfo->used[1] < cinfo->budget) {
@@ -736,11 +736,11 @@ static void period_timer_callback_slave(void *info)
 			WARN_ON_ONCE(surplus > global->max_budget);
 			donate_budget(cinfo->period_cnt, surplus);
 			cinfo->cur_budget = cinfo->budget - surplus;
-			trace_printk("SRT: surplus: %d, budget: %d\n", surplus, 
-				     cinfo->budget);
+			DEBUG(trace_printk("SRT: surplus: %d, budget: %d\n", surplus, 
+					   cinfo->budget));
 		} else {
 			cinfo->cur_budget = cinfo->budget;
-			trace_printk("SRT: don't donate\n");
+			DEBUG(trace_printk("SRT: don't donate\n"));
 		}
 	}
 
@@ -791,10 +791,12 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	ktime_t now;
 	int orun;
 	long new_period;
+	cpumask_var_t active_mask;
+
 	now = timer->base->get_time();
 
+        DEBUG(trace_printk("master begin\n"));
 	BUG_ON(smp_processor_id() != global->master);
-
 
 	orun = hrtimer_forward(timer, now, global->period_in_ktime);
 	if (orun == 0)
@@ -804,12 +806,18 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	global->period_cnt += orun;
 	global->budget = 0;
 	new_period = global->period_cnt;
+	cpumask_copy(active_mask, global->active_mask);
 	spin_unlock(&global->lock);
 
+	DEBUG(trace_printk("spinlock end\n"));
 	if (orun > 1)
 		trace_printk("ERR: timer overrun %d at period %ld\n",
 			    orun, new_period);
-	on_each_cpu(period_timer_callback_slave, (void *)new_period, 0);
+
+	on_each_cpu_mask(active_mask,
+		period_timer_callback_slave, (void *)new_period, 0);
+
+	DEBUG(trace_printk("master end\n"));
 	return HRTIMER_RESTART;
 }
 
@@ -1325,12 +1333,12 @@ static int throttle_thread(void *arg)
 
 	while (!kthread_should_stop() && cpu_online(cpunr)) {
 
-		trace_printk("wait an event\n");
+		DEBUG(trace_printk("wait an event\n"));
 		wait_event_interruptible(cinfo->throttle_evt,
 					 cinfo->throttled_task ||
 					 kthread_should_stop());
 
-		trace_printk("got an event\n");
+		DEBUG(trace_printk("got an event\n"));
 
 		if (kthread_should_stop())
 			break;
@@ -1344,7 +1352,7 @@ static int throttle_thread(void *arg)
 		}
 	}
 
-	trace_printk("exit\n");
+	DEBUG(trace_printk("exit\n"));
 	return 0;
 }
 
@@ -1354,6 +1362,8 @@ static int memguard_idle_notifier(struct notifier_block *nb, unsigned long val,
 {
 	struct memguard_info *global = &memguard_info;
 	unsigned long flags;
+
+	DEBUG(trace_printk("idle state update: %ld\n", val));
 
 	spin_lock_irqsave(&global->lock, flags);
 	if (val == IDLE_START) {
@@ -1383,7 +1393,12 @@ int init_module( void )
 	zalloc_cpumask_var(&global->active_mask, GFP_NOWAIT);
 
 	if (g_period_us < 0 || g_period_us > 1000000) {
-		printk(KERN_INFO "Must be 0 < period < 1000 us\n");
+		printk(KERN_INFO "Must be 0 < period < 1 sec\n");
+		return -ENODEV;
+	}
+
+	if (g_test) {
+		self_test();
 		return -ENODEV;
 	}
 
@@ -1446,23 +1461,12 @@ int init_module( void )
 		BUG_ON(IS_ERR(cinfo->throttle_thread));
 		kthread_bind(cinfo->throttle_thread, i);
 		wake_up_process(cinfo->throttle_thread);
-
-		if (g_test && self_test(i) < 0) {
-			smp_call_function_single(i, __disable_counter, NULL, 1);
-			perf_event_release_kernel(event);
-			break;
-		}
 	}
 
 	register_hotcpu_notifier(&memguard_cpu_notifier);
 	put_online_cpus();
 
 	memguard_init_debugfs();
-
-	if (g_test) {
-		pr_info("Do not start period timer.\n");
-		return 0;
-	}
 
 	pr_info("Start event counters\n");
 	start_counters();
@@ -1516,7 +1520,9 @@ void cleanup_module( void )
 		perf_event_release_kernel(cinfo->event);
 		pr_info("Stopping kthrottle/%d\n", i);
 		kthread_stop(cinfo->throttle_thread);
+		cinfo->throttled_task = NULL;
 	}
+	smp_mb();
 
 	unregister_hotcpu_notifier(&memguard_cpu_notifier);
 	free_percpu(core_info);
@@ -1531,154 +1537,60 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Heechul Yun <heechul@illinois.edu>");
 
 
-/* 
- * test basic h/w functionalities. measure overhead. and so on.
- * called hardirq context via IPI 
- * 
- */
-struct test_result {
-	int retcode;
-	int intr_count;
-} g_test_result = { 0 };
-
-static void selftest_ovf_handler(struct perf_event *event, 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 2, 0)
-				 int nmi,
-#endif
-				 struct perf_sample_data *data,
-				 struct pt_regs *regs)
+static void test_ipi_cb(void *info)
 {
-	DEBUG_P4080(trace_printk("pmu got an interrupt\n"));
-	g_test_result.intr_count ++;
-	event->pmu->start(event, PERF_EF_RELOAD);
+	trace_printk("IPI called on %d\n", smp_processor_id());
 }
 
-
-/* IPI handler */
-
-/**
- * Measure timing of memory read/write/update operation for 2x of
- * cache-line. Then calculate latency for 1 cache-line access
- */
-static int detect_average_cacheline_cost(int mem_size, char *mem_ptr)
+#if 0
+static void test_ipi_master(void)
 {
+	ktime_t start, duration;
 	int i;
-	int cache_line_size = 64;
-	u64 nread, sum;
-	ktime_t start, duration;
-	u64 result;
 
-	sum = nread = 0;
+	/* Measuring IPI overhead */
+	trace_printk("self-test begin\n");
 	start = ktime_get();
-	for ( i = 0; i < mem_size; i += cache_line_size) {
-		mem_ptr[i] = i;
-		sum += mem_ptr[i];
-	}
-	nread += i;
-	duration = ktime_sub(ktime_get(), start);
-
-	/* nread : duration.tv64 = 64 : x
-	   x = duration.tv64 * 64 / nread
-	*/
-	BUG_ON(nread == 0);
-	result = div64_u64(duration.tv64 * cache_line_size, nread);
-	if (result == 0) result = 1;
-	return (int)result;
-}
-
-
-static void self_test_cb(unsigned long info)
-{
-	struct test_result *result = &g_test_result;
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-	char *small_buf;
-	int size;
-	u64 new;
-	u64 ovf_count_backup;
-	perf_overflow_handler_t ovf_handler_backup;
-	ktime_t start, duration;
-	int avg_cost = 0;
-	int repeat, i;
-	/* backup original overflow setting */
-	ovf_count_backup = cinfo->event->hw.sample_period;
-	ovf_handler_backup = cinfo->event->overflow_handler;
-
-	DEBUG_P4080(trace_printk("backup hw.sample_period: %lld\n", ovf_count_backup));
-
-	/* temporary overflow setting */
-	cinfo->event->hw.sample_period = 10;
-	local64_set(&cinfo->event->hw.period_left, 10);
-	cinfo->event->overflow_handler = selftest_ovf_handler;
-
-	/* start counting */
-	size = 2*1024*1024;
-	small_buf = kmalloc(size, GFP_ATOMIC);
-	if (!small_buf) {
-		printk(KERN_ERR "test memory allocation failed\n");
-		result->retcode = -1;
-		return;
-	}
-
-	DEBUG_P4080(trace_printk("pmu->add\n"));
-	cinfo->event->pmu->add(cinfo->event, PERF_EF_START);
-
-	start = ktime_get();
-	avg_cost = detect_average_cacheline_cost(size, small_buf);
-	duration = ktime_sub(ktime_get(), start);
-	kfree(small_buf);
-
-	DEBUG_P4080(trace_printk("pmu->stop\n"));
-	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
-	new = perf_event_count(cinfo->event);
-
-	pr_info("intr_count: %d, avg_cost: %d\n", 
-	       g_test_result.intr_count, avg_cost);
-	DEBUG_P4080(printk("cur counter: 0x%08x (%lld) diff: %lld\n", 
-			   (u32)new, new, 0x80000000ul-new));
-	/* timing overhead measurement */
-	repeat = 10000;
-	start = ktime_get();
-	for (i = 0; i < repeat; i++) {
-		cinfo->event->pmu->start(cinfo->event, PERF_EF_RELOAD);
-		cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
-		new = perf_event_count(cinfo->event);
-		DEBUG_P4080(trace_printk("cur counter: 0x%08x (%lld) diff: %lld\n",
-				   (u32)new, new, 0x80000000ul-new));
+	for (i = 0; i < g_test; i++) {
+		on_each_cpu(test_ipi_cb, 0, 0);
 	}
 	duration = ktime_sub(ktime_get(), start);
-	/* NOTE: on intel core2. avg cost = 500ns */
-	pr_info("read %d times took %lld ns. avg=%lld\n", repeat, 
-	       duration.tv64, div64_u64(duration.tv64, repeat));
+	trace_printk("self-test end\n");
+	pr_info("#iterations: %d | duration: %lld us | average: %lld ns\n",
+		g_test, duration.tv64/1000, duration.tv64/g_test);
+}
+#endif
 
-	/* restore original overflow setting */
-	DEBUG_P4080(trace_printk("restore hw.sample_period: %lld\n", ovf_count_backup));
-	local64_set(&cinfo->event->hw.period_left, ovf_count_backup);
-	cinfo->event->hw.sample_period = ovf_count_backup;
-	cinfo->event->overflow_handler = ovf_handler_backup;
-
-	result->retcode = 1;
-	smp_wmb();
+enum hrtimer_restart test_timer_cb(struct hrtimer *timer)
+{
+	ktime_t now;
+	now = timer->base->get_time();
+	hrtimer_forward(timer, now, ktime_set(0, 1000 * 1000));
+	trace_printk("master begin\n");
+	on_each_cpu(test_ipi_cb, 0, 0);
+	trace_printk("master end\n");
+	g_test--;
+	smp_mb();
+	if (g_test == 0) 
+		return HRTIMER_NORESTART;
+	else
+		return HRTIMER_RESTART;
 }
 
-DECLARE_TASKLET(test_tasklet, self_test_cb, 0);
-static void __self_test(void *info)
+static int self_test(void)
 {
-	g_test_result.retcode = 0;
-	g_test_result.intr_count = 0;
-	tasklet_schedule(&test_tasklet);
-}
+	struct hrtimer __test_hr_timer;
 
-static int self_test(int cpu)
-{
-	smp_call_function_single(cpu, __self_test, NULL, 1);
-	while (g_test_result.retcode == 0) {
+	hrtimer_init(&__test_hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED );
+	__test_hr_timer.function = &test_timer_cb;
+	hrtimer_start(&__test_hr_timer, ktime_set(0, 1000 * 1000), /* 1ms */
+		      HRTIMER_MODE_REL_PINNED);
+
+	while (g_test) {
+		smp_mb();
 		cpu_relax();
 	}
 
-	if (g_test_result.retcode == 1) {
-		pr_info("test success for cpu%d\n", cpu);
-	} else if (g_test_result.retcode < 0) {
-		pr_info("test failed for cpu%d\n", cpu);
-	}
-	return g_test_result.retcode;
+	return 0;
 }
+

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+export PATH=$HOME/bin:$PATH:..
+
 error()
 {
     echo "ERR: $*"
@@ -32,11 +34,14 @@ else
     archbit="32"
 fi
 
+PERIOD_US=1000
+
 outputfile="log.txt"
 
 echo "ARCH: $arch ($archbit bit)"
 echo "llc_evt: 0x${llc_miss_evt}"
 echo "rmin: $RMIN"
+echo "period: $PERIOD_US us"
 
 spec2006_xeon_high_rtas13="
 470.lbm
@@ -379,52 +384,6 @@ print_stats()
     echo 
 }
 
-do_init()
-{ # load module
-    check_root
-    budgets=$1
-    reclaim=$2
-    codebase=`(cd ~/Projects/kernelapi; git log | head -n 1)`
-    option="g_hw_type=$arch g_period_us=1000 g_budget_max_bw=60000 g_budget_pct=$budgets"
-
-    [ ! -z "$reclaim" -a "$reclaim" = "1" ] && option="$option g_use_reclaim=1"
-
-    echo "loading module budget=$budgets"
-    lsmod | grep memguard && rmmod memguard
-
-    insmod ./memguard.ko $option || error "Load failed"
-
-    echo "option: $option"
-    echo "$budgets|reclaim=$reclaim|$codebase" >> $outputfile
-
-    print_settings
-}
-
-do_init_new()
-{ # load module
-    check_root
-    budgets=$1
-    reclaim=$2
-    maxbw=$3
-    codebase=`(cd ~/Projects/kernelapi; git log | head -n 1)`
-    option="g_hw_type=$arch g_budget_max_bw=$RMIN "
-
-    [ "$reclaim" = "1" ] && option="$option g_use_reclaim=1"
-    [ ! -z "$maxbw" ] && option="$option g_budget_max_bw=$maxbw"
-    echo "loading module budget=$budgets"
-    lsmod | grep memguard && rmmod memguard
-
-    insmod ./memguard.ko $option
-
-    set_max_bw $maxbw
-    set_limit "$budgets"
-
-    echo "option: $option"
-    echo "$budgets|reclaim=$reclaim|$codebase" | sed 's/ /_/g' >> $outputfile
-
-    print_settings
-}
-
 do_init_common()
 {
     check_root
@@ -434,8 +393,8 @@ do_init_common()
     local maxbw=$4
     local exclusive=$5
     local mbs=$6
-    local codebase=`(cd ~/Projects/kernelapi; git log | head -n 1)`
-    local option="g_hw_type=$arch g_budget_max_bw=$RMIN "
+    local codebase=`(cd ~/Projects/memguard; git log | head -n 1)`
+    local option="g_hw_type=$arch g_budget_max_bw=$RMIN g_period_us=$PERIOD_US"
     [ "$reclaim" = "1" ] && option="$option g_use_reclaim=1"
     echo "loading module b$budgets s$shares m$mbs r$reclaim m$maxbw c$codebase"
 

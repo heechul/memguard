@@ -35,11 +35,11 @@ do_hrt_test()
     # echo "[start]" > /sys/kernel/debug/tracing/trace_marker
     # echo "[finish]" > /sys/kernel/debug/tracing/trace_marker
 
-    echo $$ > /sys/fs/cgroup/tasks
+    echo $$ > /sys/fs/cgroup/core0/tasks
     # trace-cmd record -e sched:sched_switch \
     ./hrt -c 0 -i 1000 -C 12 -I 20 $master_schedopt > $TMPFILE \
 	|| error "exec failed"
-    echo $$ > /sys/fs/cgroup/system/tasks
+    # echo $$ > /sys/fs/cgroup/system/tasks
 
     killall -2 thr hrt bandwidth latency cpuhog matrix
     killall -9 cpuhog
@@ -66,24 +66,29 @@ test_isolation()
 
     hw=$1
 
-    log_echo "^^ no memguard"
-    nmon -F $hw-$2-$3-out-org-solo-nmon.dat -s1 -c 6
-    do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-org-solo >& /dev/null
+    log_echo "============================="
+    date >> $outputfile
+    uname -a >> $outputfile
+    log_echo "============================="
 
+    log_echo "^^ no memguard"
+    # nmon -F $hw-$2-$3-out-org-solo-nmon.dat -s1 -c 6
+    # do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-org-solo >& /dev/null
     nmon -F $hw-$2-$3-out-org-corun-nmon.dat -s1 -c 6
     do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-org-corun
 
     log_echo "^^ memguard(excl0)"
     do_init_mb "$2 $3" 0 0  >& /dev/null
-    nmon -F $hw-$2-$3-out-excl0-solo-nmon.dat -s1 -c 6
-    do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-excl0-solo >& /dev/null
+    # nmon -F $hw-$2-$3-out-excl0-solo-nmon.dat -s1 -c 6
+    # do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-excl0-solo >& /dev/null
     nmon -F $hw-$2-$3-out-excl0-corun-nmon.dat -s1 -c 6
     do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-excl0-corun
 
+
     log_echo "^^ memguard(excl5)"
     do_init_mb "$2 $3" 0 5  >& /dev/null
-    nmon -F $hw-$2-$3-out-excl5-solo-nmon.dat -s1 -c 6
-    do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-excl5-solo >& /dev/null
+    # nmon -F $hw-$2-$3-out-excl5-solo-nmon.dat -s1 -c 6
+    # do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-excl5-solo >& /dev/null
     nmon -F $hw-$2-$3-out-excl5-corun-nmon.dat -s1 -c 6
     do_hrt_test xorg "-o fifo" "-o normal" $hw-$2_$3-out-excl5-corun
 
@@ -96,7 +101,11 @@ set_cpus "1 1 1 1"
 set_cpus "1 1 0 0"
 disable_prefetcher
 init_cgroup
-test_isolation "xeon" 600 600
-test_isolation "xeon" 900 300
+# test_isolation "xeon" 600 600
+# test_isolation "xeon" 1000 1000
+# test_isolation "xeon" 1000 2000
+# test_isolation "xeon" 1000 3000
+test_isolation "xeon" 1000 4000
+#test_isolation "xeon" 900 300
 finish
 rmmod memguard
