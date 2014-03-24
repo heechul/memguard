@@ -19,6 +19,7 @@
  * Included Files
  **************************************************************************/
 #include <linux/version.h>
+#include <generated/uapi/linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/hrtimer.h>
@@ -755,7 +756,7 @@ static void period_timer_callback_slave(void *info)
 static void __init_per_core(void *info)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
-	memset(cinfo, 0, sizeof(core_info));
+	memset(cinfo, 0, sizeof(struct core_info));
 
 	smp_rmb();
 
