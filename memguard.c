@@ -13,7 +13,7 @@
  **************************************************************************/
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define USE_DEBUG  1
+#define USE_DEBUG  0
 
 /**************************************************************************
  * Included Files
@@ -176,6 +176,9 @@ static void period_timer_callback_slave(void *info);
 enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer);
 static void memguard_process_overflow(struct irq_work *entry);
 static int throttle_thread(void *arg);
+static void memguard_on_each_cpu_mask(const struct cpumask *mask,
+				      smp_call_func_t func,
+				      void *info, bool wait);
 
 /**************************************************************************
  * Module parameters
@@ -202,6 +205,18 @@ MODULE_PARM_DESC(g_budget_max_bw, "maximum memory bandwidth (MB/s)");
 /**************************************************************************
  * Module main code
  **************************************************************************/
+
+/* similar to on_each_cpu_mask(), but this must be called with IRQ disabled */
+static void memguard_on_each_cpu_mask(const struct cpumask *mask, 
+				      smp_call_func_t func,
+				      void *info, bool wait)
+{
+	int cpu = smp_processor_id();
+	smp_call_function_many(mask, func, info, wait);
+	if (cpumask_test_cpu(cpu, mask)) {
+		func(info);
+	}
+}
 
 static int __cpuinit memguard_cpu_callback(struct notifier_block *nfb,
 					 unsigned long action, void *hcpu)
@@ -235,8 +250,8 @@ static inline u64 convert_mb_to_events(int mb)
 }
 static inline int convert_events_to_mb(u64 events)
 {
-	int divisor = 1024*1024;
-	int mb = div64_u64(events*CACHE_LINE_SIZE*1000 + (divisor-1), divisor);
+	int divisor = g_period_us*1024*1024;
+	int mb = div64_u64(events*CACHE_LINE_SIZE*1000000 + (divisor-1), divisor);
 	return mb;
 }
 
@@ -588,11 +603,12 @@ static void memguard_process_overflow(struct irq_work *entry)
 	DEBUG_RECLAIM(trace_printk("fail to reclaim after %lld nsec.\n",
 				   ktime_get().tv64 - start.tv64));
 
+#if 0 /* overhead measurement only */
 	/* wake-up throttle task */
 	cinfo->throttled_task = current;
 	cinfo->throttled_time = start;
 	WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
-
+#endif
 	smp_mb();
 	wake_up_interruptible(&cinfo->throttle_evt);
 }
@@ -814,7 +830,7 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 		trace_printk("ERR: timer overrun %d at period %ld\n",
 			    orun, new_period);
 
-	on_each_cpu_mask(active_mask,
+	memguard_on_each_cpu_mask(active_mask,
 		period_timer_callback_slave, (void *)new_period, 0);
 
 	DEBUG(trace_printk("master end\n"));

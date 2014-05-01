@@ -57,13 +57,14 @@ Once the module is loaded, it provides several configuration interfaces as follo
 
 	- exclusive mode control
 
-	proportional share mode (see TC submission)  
-	# echo exclusive 5 > /sys/kernel/debug/memguard/control
-
-	spare b/w sharing mode (see RTAS13)
-	# echo exclusive 2 > /sys/kernel/debug/memguard/control
+	strict reservation. (disable best-effort sharing. only use guaranteed bw)
+	# echo exclusive 0 > /sys/kernel/debug/memguard/control
 
 	last exclusive. last core exclusively use the rest b/w (not in the paper)
 	# echo exclusive 1 > /sys/kernel/debug/memguard/control
 
+	spare b/w sharing mode (see RTAS13)
+	# echo exclusive 2 > /sys/kernel/debug/memguard/control
 
+	proportional share mode (see TC submission)  
+	# echo exclusive 5 > /sys/kernel/debug/memguard/control
