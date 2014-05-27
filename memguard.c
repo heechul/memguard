@@ -19,7 +19,6 @@
  * Included Files
  **************************************************************************/
 #include <linux/version.h>
-#include <generated/uapi/linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/hrtimer.h>
@@ -604,12 +603,11 @@ static void memguard_process_overflow(struct irq_work *entry)
 	DEBUG_RECLAIM(trace_printk("fail to reclaim after %lld nsec.\n",
 				   ktime_get().tv64 - start.tv64));
 
-#if 0 /* overhead measurement only */
 	/* wake-up throttle task */
 	cinfo->throttled_task = current;
 	cinfo->throttled_time = start;
 	WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
-#endif
+
 	smp_mb();
 	wake_up_interruptible(&cinfo->throttle_evt);
 }
