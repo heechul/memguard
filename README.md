@@ -15,7 +15,7 @@ Install
 	# insmod memguard.ko	
 	    <-- Load the module by doing
 
-Usages
+Usage
 ===========  
 
 Once the module is loaded, it provides several configuration interfaces as follows:
