@@ -43,16 +43,16 @@ Once the module is loaded, it provides several configuration interfaces as follo
 
 	- set maxbw (r_min in the paper)
 
-	# echo maxbw 1200 > /sys/kernel/debug/memesched/control
+	# echo maxbw 1200 > /sys/kernel/debug/memguard/control
 
 
 	- reclaim control
 
 	enable
-	# echo reclaim 1 > /sys/kernel/debug/memesched/control
+	# echo reclaim 1 > /sys/kernel/debug/memguard/control
 
 	disable
-	# echo reclaim 0 > /sys/kernel/debug/memesched/control
+	# echo reclaim 0 > /sys/kernel/debug/memguard/control
 
 
 	- exclusive mode control
