@@ -16,7 +16,7 @@ elif grep "Core(TM) i5" /proc/cpuinfo; then
     llc_miss_evt="8b0" #7024
 else
     arch=intel
-    llc_miss_evt="412e"
+    llc_miss_evt="412e" # LLC misses
 fi
 
 if [ "$arch" = "core2" ]; then
