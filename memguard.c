@@ -13,7 +13,7 @@
  **************************************************************************/
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define USE_DEBUG  0
+#define USE_DEBUG  1
 
 /**************************************************************************
  * Included Files
@@ -59,6 +59,8 @@
 #  define DEBUG_RECLAIM(x)
 #  define DEBUG_USER(x)
 #endif
+
+#define BUF_SIZE 256
 
 /**************************************************************************
  * Public Types
@@ -143,7 +145,7 @@ static int g_use_task_priority = 0;
 static int g_budget_pct[MAX_NCPUS];
 static int g_budget_cnt = 4;
 static int g_budget_min_value = 1000;
-static int g_budget_max_bw = 2100; /* MB/s. best=6000 MB/s, worst=2100 MB/s */ 
+static int g_budget_max_bw = 1200; /* MB/s. best=6000 MB/s, worst=1200 MB/s */ 
 
 static struct dentry *memguard_dir;
 
@@ -606,8 +608,8 @@ static void memguard_process_overflow(struct irq_work *entry)
 	/* wake-up throttle task */
 	cinfo->throttled_task = current;
 	cinfo->throttled_time = start;
-	WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
 
+	WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
 	smp_mb();
 	wake_up_interruptible(&cinfo->throttle_evt);
 }
@@ -942,11 +944,11 @@ static ssize_t memguard_control_write(struct file *filp,
 				    const char __user *ubuf,
 				    size_t cnt, loff_t *ppos)
 {
-	char buf[256];
+	char buf[BUF_SIZE];
 	char *p = buf;
 	struct memguard_info *global = &memguard_info;
 
-	if (copy_from_user(&buf, ubuf, (cnt > 256) ? 256: cnt) != 0)
+	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0)
 		return 0;
 
 	if (!strncmp(p, "maxbw ", 6)) {
@@ -1000,6 +1002,11 @@ static const struct file_operations memguard_control_fops = {
 static void __update_budget(void *info)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
+
+	if ((unsigned long)info == 0) {
+		pr_info("ERR: Requested budget is zero\n");
+		return;
+	}
 	cinfo->limit = (unsigned long)info;
 	cinfo->weight = 0;
 	smp_mb();
@@ -1011,6 +1018,12 @@ static void __update_budget(void *info)
 static void __update_weight(void *info)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
+
+	if ((unsigned long)info == 0) {
+		pr_info("ERR: Requested weight is zero\n");
+		return;
+	}
+
 	cinfo->weight = (unsigned long)info;
 	cinfo->limit = 0;
 	smp_mb();
@@ -1022,25 +1035,54 @@ static ssize_t memguard_limit_write(struct file *filp,
 				    const char __user *ubuf,
 				    size_t cnt, loff_t *ppos)
 {
-	char buf[256];
+	char buf[BUF_SIZE];
 	char *p = buf;
 	int i;
 	int max_budget = 0;
 	int use_mb = 0;
 	struct memguard_info *global = &memguard_info;
 		
-	if (copy_from_user(&buf, ubuf, (cnt > 256) ? 256: cnt) != 0) 
+	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0) 
 		return 0;
+
+	get_online_cpus();
+
+	/* bw_lock support */
+	if (!strncmp(p, "bw_lock ", 8)) {
+		int input; 
+		unsigned long events;
+		p += 8; 
+		sscanf(p, "%d %d", &i, &input); /* coreid, bw_mb */
+
+		events = (unsigned long)convert_mb_to_events(input);
+
+		smp_call_function_single(i, __update_budget,
+					 (void *)events, 0);
+		goto out;
+		
+	} else if (!strncmp(p, "bw_unlock ", 10)) {
+		unsigned long events;
+		p += 10; 
+		sscanf(p, "%d", &i); 
+		events = (unsigned long)convert_mb_to_events(100000);
+
+		smp_call_function_single(i, __update_budget,
+					 (void *)events, 0);
+		goto out;
+	}
 
 	if (!strncmp(p, "mb ", 3)) {
 		use_mb = 1;
 		p+=3;
 	}
-	get_online_cpus();
 	for_each_online_cpu(i) {
 		int input;
 		unsigned long events;
 		sscanf(p, "%d", &input);
+		if (input == 0) {
+			pr_err("ERR: CPU%d: input is zero: %s.\n",i, p);
+			continue;
+		}
 		if (!use_mb)
 			input = g_budget_max_bw*100/input;
 		events = (unsigned long)convert_mb_to_events(input);
@@ -1057,8 +1099,8 @@ static ssize_t memguard_limit_write(struct file *filp,
 	global->max_budget = max_budget;
 	g_budget_max_bw = convert_events_to_mb(max_budget);
 
+out:
 	smp_mb();
-
 	put_online_cpus();
 	return cnt;
 }
@@ -1117,11 +1159,11 @@ static ssize_t memguard_share_write(struct file *filp,
 				    const char __user *ubuf,
 				    size_t cnt, loff_t *ppos)
 {
-	char buf[256];
+	char buf[BUF_SIZE];
 	char *p = buf;
 	int i, cpu;
 
-	if (copy_from_user(&buf, ubuf, (cnt > 256) ? 256: cnt) != 0)
+	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0)
 		return 0;
 	cpu = get_cpu();
 	for_each_online_cpu(i) {
