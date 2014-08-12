@@ -127,7 +127,7 @@ struct memguard_info {
 	cpumask_var_t throttle_mask;
 	cpumask_var_t active_mask;
 	atomic_t wsum;
-	long cpuhog_cnt;
+	long bw_locked_core;
 	struct hrtimer hr_timer;
 };
 
@@ -1032,6 +1032,9 @@ static void __update_weight(void *info)
 				smp_processor_id(), cinfo->weight));
 }
 
+#define MAXPERF_EVENTS 1638400  /* 100000 MB/s */
+#define THROTTLE_EVENTS 1638     /*    100 MB/s */
+ 
 static ssize_t memguard_limit_write(struct file *filp,
 				    const char __user *ubuf,
 				    size_t cnt, loff_t *ppos)
@@ -1042,6 +1045,7 @@ static ssize_t memguard_limit_write(struct file *filp,
 	int max_budget = 0;
 	int use_mb = 0;
 	struct memguard_info *global = &memguard_info;
+	struct core_info *cinfo;
 		
 	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0) 
 		return 0;
@@ -1052,33 +1056,55 @@ static ssize_t memguard_limit_write(struct file *filp,
 	if (!strncmp(p, "bw_lock ", 8)) {
 		int input, core; 
 		unsigned long events;
-		unsigned long regul;
 		p += 8; 
 		sscanf(p, "%d %d", &core, &input); /* coreid, bw_mb */
 
 		events = (unsigned long)convert_mb_to_events(input);
-		regul  = (unsigned long)convert_mb_to_events(100);
 
-		for_each_online_cpu(i) {
-			if (i == core)
-				smp_call_function_single(i, __update_budget,
-							 (void *)events, 0);
-			else
-				smp_call_function_single(i, __update_budget,
-							 (void *)regul, 0);
+		spin_lock(&global->lock);
+		cinfo = per_cpu_ptr(core_info, core);
+		cinfo->limit = events;
+		cinfo->weight = 0;
+		global->bw_locked_core++;
+		if (global->bw_locked_core == 1) { 
+			/* initiate bw_lock */
+			DEBUG(trace_printk("bw_lock: throttle cores except %d\n", core));
+			for_each_online_cpu(i) {
+				struct core_info *cinfo = per_cpu_ptr(core_info, i);
+				if (i != core) {
+					/* throttle unlocked cores */
+					cinfo->limit = THROTTLE_EVENTS;
+					cinfo->weight = 0;
+				}
+			}
 		}
+		
+		spin_unlock(&global->lock);
 		goto out;
 		
 	} else if (!strncmp(p, "bw_unlock ", 10)) {
-		unsigned long events;
+		int core; 
 		p += 10; 
-		sscanf(p, "%d", &i); 
-		events = (unsigned long)convert_mb_to_events(100000);
+		sscanf(p, "%d", &core); 
 
-		for_each_online_cpu(i) {
-			smp_call_function_single(i, __update_budget,
-						 (void *)events, 0);
+		spin_lock(&global->lock);
+		cinfo = per_cpu_ptr(core_info, core);
+		cinfo->limit = MAXPERF_EVENTS;
+		cinfo->weight = 0;
+		global->bw_locked_core--;
+		if (global->bw_locked_core == 0) {
+			/* unlock all throttled cores */
+			for_each_online_cpu(i) {
+				struct core_info *cinfo = per_cpu_ptr(core_info, i);
+				if (cinfo->limit == THROTTLE_EVENTS) {
+					/* throttle unlocked cores */
+					cinfo->limit = MAXPERF_EVENTS;
+					cinfo->weight = 0;
+				}
+			}
+			DEBUG(trace_printk("bw_unlock: lock cores\n"));
 		}
+		spin_unlock(&global->lock);
 		goto out;
 	}
 
@@ -1346,7 +1372,7 @@ static int memguard_failcnt_show(struct seq_file *m, void *v)
 	for_each_online_cpu(i)
 		seq_printf(m, "%ld ", per_cpu_ptr(core_info, i)->period_cnt);
 
-	seq_printf(m, "\ncpuhog_counts: %ld\n", global->cpuhog_cnt);
+	seq_printf(m, "\nbw_locked_core: %ld\n", global->bw_locked_core);
 
 
 	put_online_cpus();
