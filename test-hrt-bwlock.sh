@@ -12,22 +12,25 @@ error()
 do_init_mg-ss()
 {
     echo "mg-ss"
-    echo mb 900 100 100 100 > $MGDIR/limit
+    bws="$1"
+    echo mb $bws > $MGDIR/limit
     echo exclusive 5 > $MGDIR/control
 }
 
 do_init_mg-br-ss()
 {
     echo "mg-br-ss"
-    echo mb 900 100 100 100 > $MGDIR/limit
+    bws="$1"
+    echo mb $bws > $MGDIR/limit
     echo exclusive 5 > $MGDIR/control
     echo reclaim 1 > $MGDIR/control
 }
 
 do_load()
 {
+    cores="$1"
 # co-runner
-    for c in 1 2 3; do
+    for c in $cores; do
 	./bandwidth -c $c -t 100000 -a read &
     done
 }
@@ -35,20 +38,41 @@ do_load()
 # test
 do_test_mg()
 {
-    do_load
+    do_load "1 2 3"
     echo "" > /sys/kernel/debug/tracing/trace
     time taskset -c 0 ./hrt-bwlock -i 400 -I 10 2> /dev/null 1> /dev/null 
     cat /sys/kernel/debug/tracing/trace > hrt-bwlock.trace
     killall -2 bandwidth
 }
 
+do_test_mg_2()
+{
+    do_load "2 3"
+    echo "" > /sys/kernel/debug/tracing/trace
+    taskset -c 1 ./hrt-bwlock -i 100000 -m 6144 -I 10 >& /dev/null &
+    time taskset -c 0 ./hrt-bwlock -i 400 -I 10 2> /dev/null 1> /dev/null 
+    cat /sys/kernel/debug/tracing/trace > hrt-bwlock.trace
+    killall -2 bandwidth hrt-bwlock
+}
+
 do_test_bw_lock()
 {
-    do_load
+    do_load "1 2 3"
     echo "" > /sys/kernel/debug/tracing/trace
     time taskset -c 0 ./hrt-bwlock -i 400 -I 10 -b 2> /dev/null 1> /dev/null 
     cat /sys/kernel/debug/tracing/trace > hrt-bwlock.trace
-    killall -2 bandwidth
+    killall -2 bandwidth hrt-bwlock
+}
+
+
+do_test_bw_lock_2()
+{
+    do_load "2 3"
+    echo "" > /sys/kernel/debug/tracing/trace
+    taskset -c 1 ./hrt-bwlock -i 100000 -m 6144 -I 10 -b >& /dev/null &
+    time taskset -c 0 ./hrt-bwlock -i 400 -I 10 -b 2> /dev/null 1> /dev/null 
+    cat /sys/kernel/debug/tracing/trace > hrt-bwlock.trace
+    killall -2 bandwidth hrt-bwlock
 }
 
 plot()
@@ -83,20 +107,25 @@ do_graph()
     plot 0 10000
 }
 
-# insmod ./memguard.ko
-# do_test_bw_lock
-# rmmod memguard
+echo 16384 > /sys/kernel/debug/tracing/buffer_size_kb
+
 
 # insmod ./memguard.ko
-# do_init_mg-ss
+# do_test_bw_lock_2
+# rmmod memguard
+
+
+insmod ./memguard.ko
+do_init_mg-br-ss "800 800 100 100"
+do_test_mg_2
+rmmod memguard
+
+# insmod ./memguard.ko
+# do_init_mg-br-ss
 # do_test_mg
 # rmmod memguard
 
-echo 16384 > /sys/kernel/debug/tracing/buffer_size_kb
-insmod ./memguard.ko
-do_init_mg-br-ss
-do_test_mg
-rmmod memguard
+echo done rmmod
 
 do_graph
 cp hrt-bw*.pdf ~/Dropbox/tmp

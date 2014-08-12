@@ -61,7 +61,7 @@
 #endif
 
 #define BUF_SIZE 256
-#define PREDICTOR 2  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
+#define PREDICTOR 1  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
 
 /**************************************************************************
  * Public Types
@@ -905,7 +905,9 @@ static struct perf_event *init_counter(int cpu, int budget)
 static void __kill_throttlethread(void *info)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
+	pr_info("Stopping kthrottle/%d\n", smp_processor_id());
 	cinfo->throttled_task = NULL;
+	smp_mb();
 }
 
 static void __disable_counter(void *info)
@@ -1068,7 +1070,6 @@ static ssize_t memguard_limit_write(struct file *filp,
 		global->bw_locked_core++;
 		if (global->bw_locked_core == 1) { 
 			/* initiate bw_lock */
-			DEBUG(trace_printk("bw_lock: throttle cores except %d\n", core));
 			for_each_online_cpu(i) {
 				struct core_info *cinfo = per_cpu_ptr(core_info, i);
 				if (i != core) {
@@ -1080,6 +1081,7 @@ static ssize_t memguard_limit_write(struct file *filp,
 		}
 		
 		spin_unlock(&global->lock);
+		DEBUG(trace_printk("bw_lock: throttle cores except %d\n", core));
 		goto out;
 		
 	} else if (!strncmp(p, "bw_unlock ", 10)) {
@@ -1102,9 +1104,10 @@ static ssize_t memguard_limit_write(struct file *filp,
 					cinfo->weight = 0;
 				}
 			}
-			DEBUG(trace_printk("bw_unlock: lock cores\n"));
+
 		}
 		spin_unlock(&global->lock);
+		DEBUG(trace_printk("bw_unlock: lock cores\n"));
 		goto out;
 	}
 
@@ -1588,22 +1591,15 @@ void cleanup_module( void )
 
 	struct memguard_info *global = &memguard_info;
 
-	idle_notifier_unregister(&memguard_idle_nb);
-
 	smp_mb();
 
 	get_online_cpus();
 
-	/* unthrottle tasks before exit */
-	pr_info("kill throttle thrads\n");
 	on_each_cpu(__kill_throttlethread, NULL, 1);
 
 	/* unregister sched-tick callback */
 	pr_info("Cancel timer\n");
 	hrtimer_cancel(&global->hr_timer);
-
-	/* remove debugfs entries */
-	debugfs_remove_recursive(memguard_dir);
 
 	/* stop perf_event counters */
 	disable_counters();
@@ -1611,17 +1607,25 @@ void cleanup_module( void )
 	/* destroy perf objects */
 	for_each_online_cpu(i) {
 		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		perf_event_release_kernel(cinfo->event);
 		pr_info("Stopping kthrottle/%d\n", i);
-		kthread_stop(cinfo->throttle_thread);
 		cinfo->throttled_task = NULL;
+		kthread_stop(cinfo->throttle_thread);
+		perf_event_release_kernel(cinfo->event);
 	}
-	smp_mb();
-
-	unregister_hotcpu_notifier(&memguard_cpu_notifier);
-	free_percpu(core_info);
 
 	put_online_cpus();
+
+	/* unregister callbacks */
+	idle_notifier_unregister(&memguard_idle_nb);
+	unregister_hotcpu_notifier(&memguard_cpu_notifier);
+
+	/* remove debugfs entries */
+	debugfs_remove_recursive(memguard_dir);
+
+	/* free allocated data structure */
+	free_cpumask_var(global->throttle_mask);
+	free_cpumask_var(global->active_mask);
+	free_percpu(core_info);
 
 	pr_info("module uninstalled successfully\n");
 	return;

@@ -38,7 +38,10 @@
 	char buf[BUF_SIZE]; int len;	                            \
 	sprintf(buf, fmt, ##args);				    \
 	len = write(fd, buf, BUF_SIZE);				    \
-	if (len < BUF_SIZE) {					    \
+	if (len < 0 ) {						    \
+		perror("error");				    \
+		exit(1);					    \
+	} if (len < BUF_SIZE) {					    \
 		fprintf(stderr, "ERR: buf=%s, len=%d\n", buf, len); \
 		return -1;					    \
 	}							    \
@@ -62,9 +65,9 @@ int bw_lock_init()
 	int ret; 
 	assert(fd_control == 0);
 	fd_control = open("/sys/kernel/debug/memguard/control", O_RDWR);
-	assert(fd_control);
+	assert(fd_control > 0);
 	fd_limit = open("/sys/kernel/debug/memguard/limit", O_RDWR);
-	assert(fd_limit);
+	assert(fd_limit > 0);
 	n_proc = (int)sysconf(_SC_NPROCESSORS_ONLN);
 	core_id = sched_getcpu();
 	assert(core_id >= 0); 
