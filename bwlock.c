@@ -76,15 +76,18 @@ int bw_lock_init()
 
 int bw_lock(int reserve_mb, bw_attr_t attr)
 {
+	assert(fd_limit);
 	my_printf(fd_limit, "bw_lock %d %d\n", core_id, reserve_mb);
 }
 
 int bw_unlock(bw_attr_t *attr)
 {
+	assert(fd_limit);
 	my_printf(fd_limit, "bw_unlock %d\n", core_id);
 }
 
 int set_attr(bw_attr_t attr)
 {
+	assert(fd_control);
 	my_printf(fd_control, "set_attr %d %d\n", core_id, attr);
 }

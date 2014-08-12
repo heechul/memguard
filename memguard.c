@@ -13,7 +13,7 @@
  **************************************************************************/
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define USE_DEBUG  1
+#define USE_DEBUG  1 
 
 /**************************************************************************
  * Included Files
@@ -61,6 +61,7 @@
 #endif
 
 #define BUF_SIZE 256
+#define PREDICTOR 2  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
 
 /**************************************************************************
  * Public Types
@@ -326,7 +327,7 @@ void update_statistics(struct core_info *cinfo)
 		cinfo->overall.throttled_error_dist[idx]++;
 		trace_printk("ERR: throttled_error: %d < %d\n", used, cinfo->budget);
 		/* compensation for error to catch-up*/
-		cinfo->used[1] = cinfo->budget + diff;
+		cinfo->used[PREDICTOR] = cinfo->budget + diff;
 	}
 	cinfo->prev_throttle_error = 0;
 
@@ -747,9 +748,9 @@ static void period_timer_callback_slave(void *info)
 		DEBUG(trace_printk("NonRT: donate all %d\n", cinfo->budget));
 	} else if (target->policy == SCHED_NORMAL) {
 		BUG_ON(rt_task(target));
-		if (cinfo->used[1] < cinfo->budget) {
+		if (cinfo->used[PREDICTOR] < cinfo->budget) {
 			/* donate 'expected surplus' ahead of time. */
-			int surplus = max(cinfo->budget - cinfo->used[1], 0);
+			int surplus = max(cinfo->budget - cinfo->used[PREDICTOR], 0);
 			WARN_ON_ONCE(surplus > global->max_budget);
 			donate_budget(cinfo->period_cnt, surplus);
 			cinfo->cur_budget = cinfo->budget - surplus;
@@ -1049,15 +1050,23 @@ static ssize_t memguard_limit_write(struct file *filp,
 
 	/* bw_lock support */
 	if (!strncmp(p, "bw_lock ", 8)) {
-		int input; 
+		int input, core; 
 		unsigned long events;
+		unsigned long regul;
 		p += 8; 
-		sscanf(p, "%d %d", &i, &input); /* coreid, bw_mb */
+		sscanf(p, "%d %d", &core, &input); /* coreid, bw_mb */
 
 		events = (unsigned long)convert_mb_to_events(input);
+		regul  = (unsigned long)convert_mb_to_events(100);
 
-		smp_call_function_single(i, __update_budget,
-					 (void *)events, 0);
+		for_each_online_cpu(i) {
+			if (i == core)
+				smp_call_function_single(i, __update_budget,
+							 (void *)events, 0);
+			else
+				smp_call_function_single(i, __update_budget,
+							 (void *)regul, 0);
+		}
 		goto out;
 		
 	} else if (!strncmp(p, "bw_unlock ", 10)) {
@@ -1066,8 +1075,10 @@ static ssize_t memguard_limit_write(struct file *filp,
 		sscanf(p, "%d", &i); 
 		events = (unsigned long)convert_mb_to_events(100000);
 
-		smp_call_function_single(i, __update_budget,
-					 (void *)events, 0);
+		for_each_online_cpu(i) {
+			smp_call_function_single(i, __update_budget,
+						 (void *)events, 0);
+		}
 		goto out;
 	}
 
