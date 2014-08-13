@@ -14,7 +14,7 @@ do_init_mg-ss()
     echo "mg-ss"
     bws="$1"
     echo mb $bws > $MGDIR/limit
-    echo exclusive 5 > $MGDIR/control
+    echo exclusive 2 > $MGDIR/control
 }
 
 do_init_mg-br-ss()
@@ -22,7 +22,7 @@ do_init_mg-br-ss()
     echo "mg-br-ss"
     bws="$1"
     echo mb $bws > $MGDIR/limit
-    echo exclusive 5 > $MGDIR/control
+    echo exclusive 2 > $MGDIR/control
     echo reclaim 1 > $MGDIR/control
 }
 
@@ -53,6 +53,15 @@ do_test_mg_2()
     time taskset -c 0 ./hrt-bwlock -i 400 -I 10 2> /dev/null 1> /dev/null 
     cat /sys/kernel/debug/tracing/trace > hrt-bwlock.trace
     killall -2 bandwidth hrt-bwlock
+}
+
+do_test_fftw()
+{
+    do_load "1 2 3"
+    echo "" > /sys/kernel/debug/tracing/trace
+    time taskset -c 0 ./fftw-bench -s 1024x1024
+    cat /sys/kernel/debug/tracing/trace > hrt-bwlock.trace
+    killall -2 bandwidth
 }
 
 do_test_bw_lock()
@@ -103,22 +112,26 @@ do_graph()
 	grep update_statistics hrt-bwlock.trace.core$core | awk '{ print $7 }' | \
 	    grep -v throttled_error > hrt-bwlock.core$core.dat
     done
-    plot 5000 5100
-    plot 0 10000
+    plot 0 500
+    plot 0 1500
+    plot 0 4000
+    plot 1000 1100
+    plot 1000 1500
+    plot 1000 2000
 }
 
 echo 16384 > /sys/kernel/debug/tracing/buffer_size_kb
 
 
-# insmod ./memguard.ko
-# do_test_bw_lock_2
-# rmmod memguard
-
-
 insmod ./memguard.ko
-do_init_mg-br-ss "800 800 100 100"
-do_test_mg_2
+do_test_fftw
 rmmod memguard
+
+
+# insmod ./memguard.ko
+# do_init_mg-ss "9000 9000 9000 9000"
+# do_test_mg_3
+# rmmod memguard
 
 # insmod ./memguard.ko
 # do_init_mg-br-ss
@@ -128,4 +141,5 @@ rmmod memguard
 echo done rmmod
 
 do_graph
+
 cp hrt-bw*.pdf ~/Dropbox/tmp

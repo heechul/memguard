@@ -9,7 +9,7 @@
 /**************************************************************************
  * Conditional Compilation Options
  **************************************************************************/
-#define DEBUG 1
+#define DEBUG 0
 
 /**************************************************************************
  * Included Files
@@ -32,8 +32,12 @@
  **************************************************************************/
 #define MAX_NPROC 64
 
-#define BUF_SIZE 32
-#define my_printf(fd, fmt, args...) \
+#define BUF_SIZE 64
+
+#if DEBUG==1
+#  define my_printf(fd, fmt, args...) fprintf(stdout, fmt, ##args)
+#else
+#  define my_printf(fd, fmt, args...) \
 {\
 	char buf[BUF_SIZE]; int len;	                            \
 	sprintf(buf, fmt, ##args);				    \
@@ -47,6 +51,7 @@
 	}							    \
 	return 0;						    \
 }
+#endif
 
 /**************************************************************************
  * Global Variables
@@ -75,22 +80,24 @@ int bw_lock_init()
 	fprintf(stdout, "N_PROC: %d, CoreId: %d\n",
 		n_proc, core_id);
 	assert(node_id == 0);
+
+	return 1; 
 }
 
 int bw_lock(int reserve_mb, bw_attr_t attr)
 {
-	assert(fd_limit);
+	if (fd_limit <= 0) return 0;
 	my_printf(fd_limit, "bw_lock %d %d\n", core_id, reserve_mb);
 }
 
 int bw_unlock(bw_attr_t *attr)
 {
-	assert(fd_limit);
+	if (fd_limit <= 0) return 0;
 	my_printf(fd_limit, "bw_unlock %d\n", core_id);
 }
 
 int set_attr(bw_attr_t attr)
 {
-	assert(fd_control);
+	if (fd_control <= 0) return 0;
 	my_printf(fd_control, "set_attr %d %d\n", core_id, attr);
 }

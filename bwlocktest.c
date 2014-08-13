@@ -23,9 +23,10 @@ uint64_t get_elapsed(struct timespec *start, struct timespec *end)
 int main()
 {
 	bw_attr_t attr;
-	bw_lock_init();
 	uint64_t tmpdiff;
 	struct timespec start, end;
+	
+	bw_lock_init();
 
 	clock_gettime(CLOCK_REALTIME, &start);	
 	for (long i = 0; i < ITER; i++) {
