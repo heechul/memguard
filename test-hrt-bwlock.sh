@@ -142,4 +142,4 @@ echo done rmmod
 
 do_graph
 
-cp hrt-bw*.pdf ~/Dropbox/tmp
+cp hrt-bw*.pdf hrt-bw*.dat ~/Dropbox/tmp

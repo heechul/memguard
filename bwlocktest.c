@@ -30,6 +30,7 @@ int main()
 
 	clock_gettime(CLOCK_REALTIME, &start);	
 	for (long i = 0; i < ITER; i++) {
+		if (i % 10000 == 0) fprintf(stderr, "%ld\n", i);
 		bw_lock(1000, SOFT);
 		bw_unlock(&attr);
 	}

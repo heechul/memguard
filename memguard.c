@@ -1048,11 +1048,10 @@ static ssize_t memguard_limit_write(struct file *filp,
 	int use_mb = 0;
 	struct memguard_info *global = &memguard_info;
 	struct core_info *cinfo;
-		
+
 	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0) 
 		return 0;
 
-	get_online_cpus();
 
 	/* bw_lock support */
 	if (!strncmp(p, "bw_lock ", 8)) {
@@ -1063,7 +1062,6 @@ static ssize_t memguard_limit_write(struct file *filp,
 
 		events = (unsigned long)convert_mb_to_events(input);
 
-		spin_lock(&global->lock);
 		cinfo = per_cpu_ptr(core_info, core);
 		cinfo->limit = events;
 		cinfo->weight = 0;
@@ -1080,7 +1078,6 @@ static ssize_t memguard_limit_write(struct file *filp,
 			}
 		}
 		
-		spin_unlock(&global->lock);
 		DEBUG(trace_printk("bw_lock: throttle cores except %d\n", core));
 		goto out;
 		
@@ -1089,7 +1086,6 @@ static ssize_t memguard_limit_write(struct file *filp,
 		p += 10; 
 		sscanf(p, "%d", &core); 
 
-		spin_lock(&global->lock);
 		cinfo = per_cpu_ptr(core_info, core);
 		cinfo->limit = MAXPERF_EVENTS;
 		cinfo->weight = 0;
@@ -1106,7 +1102,7 @@ static ssize_t memguard_limit_write(struct file *filp,
 			}
 
 		}
-		spin_unlock(&global->lock);
+
 		DEBUG(trace_printk("bw_unlock: lock cores\n"));
 		goto out;
 	}
@@ -1141,7 +1137,6 @@ static ssize_t memguard_limit_write(struct file *filp,
 
 out:
 	smp_mb();
-	put_online_cpus();
 	return cnt;
 }
 
@@ -1244,7 +1239,6 @@ static int memguard_usage_show(struct seq_file *m, void *v)
 {
 	int i, j;
 
-	get_online_cpus();
 	smp_mb();
 
 	/* current utilization */
@@ -1274,7 +1268,6 @@ static int memguard_usage_show(struct seq_file *m, void *v)
 					 (total_budget) ? total_budget : 1 );
 		seq_printf(m, "%lld ", result);
 	}
-	put_online_cpus();
 	return 0;
 }
 
@@ -1337,7 +1330,6 @@ static int memguard_failcnt_show(struct seq_file *m, void *v)
 	struct memguard_info *global = &memguard_info;
 
 	smp_mb();
-	get_online_cpus();
 	/* total #of throttled periods */
 	seq_printf(m, "throttled: ");
 	for_each_online_cpu(i) {
@@ -1378,7 +1370,6 @@ static int memguard_failcnt_show(struct seq_file *m, void *v)
 	seq_printf(m, "\nbw_locked_core: %ld\n", global->bw_locked_core);
 
 
-	put_online_cpus();
 	return 0;
 }
 
@@ -1561,7 +1552,6 @@ int init_module( void )
 	}
 
 	register_hotcpu_notifier(&memguard_cpu_notifier);
-	put_online_cpus();
 
 	memguard_init_debugfs();
 
@@ -1612,8 +1602,6 @@ void cleanup_module( void )
 		kthread_stop(cinfo->throttle_thread);
 		perf_event_release_kernel(cinfo->event);
 	}
-
-	put_online_cpus();
 
 	/* unregister callbacks */
 	idle_notifier_unregister(&memguard_idle_nb);
