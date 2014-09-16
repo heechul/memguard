@@ -22,7 +22,7 @@ uint64_t get_elapsed(struct timespec *start, struct timespec *end)
 
 int main()
 {
-	bw_attr_t attr;
+	int attr;
 	uint64_t tmpdiff;
 	struct timespec start, end;
 	

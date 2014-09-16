@@ -13,7 +13,7 @@
  **************************************************************************/
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define USE_DEBUG  1 
+#define USE_DEBUG  1
 
 /**************************************************************************
  * Included Files
@@ -51,7 +51,7 @@
 #define CACHE_LINE_SIZE 64
 
 #if USE_DEBUG
-#  define DEBUG(x) x 
+#  define DEBUG(x) x
 #  define DEBUG_RECLAIM(x) x
 #  define DEBUG_USER(x) x
 #else
@@ -127,7 +127,7 @@ struct memguard_info {
 	cpumask_var_t throttle_mask;
 	cpumask_var_t active_mask;
 	atomic_t wsum;
-	long bw_locked_core;
+	atomic_t bw_locked_core;
 	struct hrtimer hr_timer;
 };
 
@@ -710,12 +710,15 @@ static void period_timer_callback_slave(void *info)
 		/* limit mode */
 		cinfo->budget = cinfo->limit;
 	} else {
-		pr_err("both limit and weight = 0");
+		WARN_ON_ONCE(1);
+		trace_printk("both limit and weight = 0");
 	}
 
+#if 0
 	if (cinfo->budget > global->max_budget)
 		trace_printk("ERR: c->budget(%d) > g->max_budget(%d)\n",
 		     cinfo->budget, global->max_budget);
+#endif
 
 	spin_unlock(&global->lock);
 
@@ -1034,8 +1037,8 @@ static void __update_weight(void *info)
 				smp_processor_id(), cinfo->weight));
 }
 
-#define MAXPERF_EVENTS 1638400  /* 100000 MB/s */
-#define THROTTLE_EVENTS 1638     /*    100 MB/s */
+#define MAXPERF_EVENTS 163840  /* 10000 MB/s */
+#define THROTTLE_EVENTS 1638   /*   100 MB/s */
  
 static ssize_t memguard_limit_write(struct file *filp,
 				    const char __user *ubuf,
@@ -1065,8 +1068,8 @@ static ssize_t memguard_limit_write(struct file *filp,
 		cinfo = per_cpu_ptr(core_info, core);
 		cinfo->limit = events;
 		cinfo->weight = 0;
-		global->bw_locked_core++;
-		if (global->bw_locked_core == 1) { 
+
+		if (atomic_inc_return(&global->bw_locked_core) == 1) {
 			/* initiate bw_lock */
 			for_each_online_cpu(i) {
 				struct core_info *cinfo = per_cpu_ptr(core_info, i);
@@ -1076,9 +1079,9 @@ static ssize_t memguard_limit_write(struct file *filp,
 					cinfo->weight = 0;
 				}
 			}
+			trace_printk("bw_lock: throttle cores except core%d\n", core);
 		}
-		
-		DEBUG(trace_printk("bw_lock: throttle cores except %d\n", core));
+		trace_printk("bw_lock: core=%d input=%d\n", core, input);
 		goto out;
 		
 	} else if (!strncmp(p, "bw_unlock ", 10)) {
@@ -1089,8 +1092,7 @@ static ssize_t memguard_limit_write(struct file *filp,
 		cinfo = per_cpu_ptr(core_info, core);
 		cinfo->limit = MAXPERF_EVENTS;
 		cinfo->weight = 0;
-		global->bw_locked_core--;
-		if (global->bw_locked_core == 0) {
+		if (atomic_dec_and_test(&global->bw_locked_core)) {
 			/* unlock all throttled cores */
 			for_each_online_cpu(i) {
 				struct core_info *cinfo = per_cpu_ptr(core_info, i);
@@ -1098,12 +1100,12 @@ static ssize_t memguard_limit_write(struct file *filp,
 					/* throttle unlocked cores */
 					cinfo->limit = MAXPERF_EVENTS;
 					cinfo->weight = 0;
+					trace_printk("bw_unlock: un-throttle core%d\n", i);
 				}
 			}
 
 		}
-
-		DEBUG(trace_printk("bw_unlock: lock cores\n"));
+		trace_printk("bw_unlock: unlock core%d\n", core);
 		goto out;
 	}
 
@@ -1172,6 +1174,7 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 	}
 	seq_printf(m, "g_budget_max_bw: %d MB/s, (%d)\n", g_budget_max_bw,
 		global->max_budget);
+	seq_printf(m, "bw_locked_core: %d\n", atomic_read(&global->bw_locked_core));
 	put_cpu();
 	return 0;
 }
@@ -1367,7 +1370,7 @@ static int memguard_failcnt_show(struct seq_file *m, void *v)
 	for_each_online_cpu(i)
 		seq_printf(m, "%ld ", per_cpu_ptr(core_info, i)->period_cnt);
 
-	seq_printf(m, "\nbw_locked_core: %ld\n", global->bw_locked_core);
+	seq_printf(m, "\nbw_locked_core: %d\n", atomic_read(&global->bw_locked_core));
 
 
 	return 0;
@@ -1456,8 +1459,10 @@ static int memguard_idle_notifier(struct notifier_block *nb, unsigned long val,
 	spin_lock_irqsave(&global->lock, flags);
 	if (val == IDLE_START) {
 		cpumask_clear_cpu(smp_processor_id(), global->active_mask);
+#if USE_DEBUG
 		if (cpumask_equal(global->throttle_mask, global->active_mask))
 			trace_printk("DBG: last idle\n");
+#endif
 	} else
 		cpumask_set_cpu(smp_processor_id(), global->active_mask);
 	spin_unlock_irqrestore(&global->lock, flags);
@@ -1494,6 +1499,8 @@ int init_module( void )
 	global->start_tick = jiffies;
 	global->period_in_ktime = ktime_set(0, g_period_us * 1000);
 	global->max_budget = convert_mb_to_events(g_budget_max_bw);
+
+	atomic_set(&global->bw_locked_core, 0);
 
 	/* initialize all online cpus to be active */
 	cpumask_copy(global->active_mask, cpu_online_mask);

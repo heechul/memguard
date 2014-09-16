@@ -9,14 +9,15 @@
 #ifndef BWLOCK_H
 #define BWLOCK_H
 
-typedef enum {HARD, SOFT} bw_attr_t;
+#define HARD 0
+#define SOFT 1 
 
-int bw_lock_init();
+int bw_lock_init(void);
   
-int bw_lock(int reserve_mb, bw_attr_t attr);
+int bw_lock(int reserve_mb, int attr);
 
-int bw_unlock(bw_attr_t *attr);
+int bw_unlock(int *attr);
 
-int set_attr(bw_attr_t attr);
+int set_attr(int attr);
 
 #endif /* BWLOCK_H */

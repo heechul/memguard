@@ -24,13 +24,15 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdarg.h>
-
+#include <sched.h>
 #include "bwlock.h"
 
 /**************************************************************************
  * Public Definitions
  **************************************************************************/
 #define MAX_NPROC 64
+
+#define CALL_INIT_AUTO 1
 
 #define BUF_SIZE 64
 
@@ -58,46 +60,83 @@
  **************************************************************************/
 static int fd_limit;
 static int fd_control;
-static long r_min_mb = 1200; 
-static long q_min_mb = 100;
 static int n_proc, core_id, node_id;
+static int use_bw_lock = -1; /* -1 - unknown, 0 - no, 1 - yes */
+
+static int sysctl_max_bw_mb = 10000;
+/* static long r_min_mb = 1200;  */
+/* static long q_min_mb = 100; */
 
 /**************************************************************************
  * Local Implementation
  **************************************************************************/
-int bw_lock_init()
+int bw_lock_init(void)
 {
-	int ret; 
-	assert(fd_control == 0);
-	fd_control = open("/sys/kernel/debug/memguard/control", O_RDWR);
-	assert(fd_control > 0);
-	fd_limit = open("/sys/kernel/debug/memguard/limit", O_RDWR);
-	assert(fd_limit > 0);
+	if (use_bw_lock == -1) {
+		char *str = getenv("USE_BWLOCK");
+		if (str && atoi(str) == 1) 
+			use_bw_lock = 1; 
+		else
+			use_bw_lock = 0;
+
+		fprintf(stderr, "USE_BWLOCK=%d\n", use_bw_lock);
+	}
+
+	if (use_bw_lock == 0)
+		return -1;
+
 	n_proc = (int)sysconf(_SC_NPROCESSORS_ONLN);
 	core_id = sched_getcpu();
 	assert(core_id >= 0); 
 
-	fprintf(stdout, "N_PROC: %d, CoreId: %d\n",
+	fprintf(stderr, "N_PROC: %d, CoreId: %d\n",
 		n_proc, core_id);
 	assert(node_id == 0);
 
-	return 1; 
+	assert(fd_control == 0);
+	fd_control = open("/sys/kernel/debug/memguard/control", O_RDWR);
+	if (fd_control < 0) {
+		fprintf(stderr, "memguard is not loaded\n");
+		return -1;
+	}
+	fd_limit = open("/sys/kernel/debug/memguard/limit", O_RDWR);
+	assert(fd_limit > 0);
+
+	return 0; 
 }
 
-int bw_lock(int reserve_mb, bw_attr_t attr)
+int bw_lock(int reserve_mb, int attr)
 {
-	if (fd_limit <= 0) return 0;
+#if CALL_INIT_AUTO
+	if (fd_limit <= 0 && bw_lock_init() < 0)
+		return -1;
+#else
+	if (fd_limit <= 0) return -1;
+#endif
+
+	if (reserve_mb == 0)
+		reserve_mb = sysctl_max_bw_mb;
+
 	my_printf(fd_limit, "bw_lock %d %d\n", core_id, reserve_mb);
 }
 
-int bw_unlock(bw_attr_t *attr)
+int bw_unlock(int *attr)
 {
-	if (fd_limit <= 0) return 0;
+#if CALL_INIT_AUTO
+	if (fd_limit <= 0 && bw_lock_init() < 0)
+		return -1;
+#else
+	if (fd_limit <= 0) 
+		return -1;
+#endif
 	my_printf(fd_limit, "bw_unlock %d\n", core_id);
 }
 
-int set_attr(bw_attr_t attr)
+int set_attr(int attr)
 {
-	if (fd_control <= 0) return 0;
-	my_printf(fd_control, "set_attr %d %d\n", core_id, attr);
+	/* TBD: */
+	/* if (fd_control <= 0) bw_lock_init(); */
+	/* if (fd_control <= 0) return -1; */
+	/* my_printf(fd_control, "set_attr %d %d\n", core_id, attr); */
+	return 0;
 }
