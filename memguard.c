@@ -14,6 +14,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define USE_DEBUG  1
+#define USE_BWLOCK_TIMING 1 
 
 /**************************************************************************
  * Included Files
@@ -73,6 +74,12 @@ struct memstat{
 	int throttled;           /* throttled period count */
 	u64 throttled_error;     /* throttled & error */
 	int throttled_error_dist[10]; /* pct distribution */
+#if USE_BWLOCK_TIMING
+	u64 bwlock_time_ns;           /* total bwlock time in ns */
+	u64 bwlock_cnt;               /* total #of bwlock */
+	int bwlock_time_dist_us[10];  /* bwlock time distribution 0-1000us */
+	int bwlock_time_dist_ms[11];  /* bwlock time distribution 0-10ms */
+#endif
 	int exclusive;           /* exclusive period count */
 	u64 exclusive_ns;        /* exclusive mode real-time duration */
 	u64 exclusive_bw;        /* exclusive mode used bandwidth */
@@ -93,6 +100,9 @@ struct core_info {
 	volatile struct task_struct * throttled_task;
 	ktime_t throttled_time;  /* absolute time when throttled */
 
+#if USE_BWLOCK_TIMING
+	ktime_t bwlock_time;     /* absolute time when bwlocked */
+#endif
 	u64 old_val;             /* hold previous counter value */
 	int prev_throttle_error; /* check whether there was throttle error in 
 				    the previous period */
@@ -1082,16 +1092,38 @@ static ssize_t memguard_limit_write(struct file *filp,
 			trace_printk("bw_lock: throttle cores except core%d\n", core);
 		}
 		trace_printk("bw_lock: core=%d input=%d\n", core, input);
+
+#if USE_BWLOCK_TIMING
+		cinfo->bwlock_time = ktime_get();
+#endif
 		goto out;
 		
 	} else if (!strncmp(p, "bw_unlock ", 10)) {
 		int core; 
+#if USE_BWLOCK_TIMING
+		u64 bwlock_ns; int idx;
+#endif
 		p += 10; 
 		sscanf(p, "%d", &core); 
 
 		cinfo = per_cpu_ptr(core_info, core);
 		cinfo->limit = MAXPERF_EVENTS;
 		cinfo->weight = 0;
+
+#if USE_BWLOCK_TIMING
+		bwlock_ns = (ktime_get().tv64 - cinfo->bwlock_time.tv64);
+		cinfo->overall.bwlock_time_ns += bwlock_ns;
+		cinfo->overall.bwlock_cnt ++; 
+		idx = (int)(bwlock_ns / 1000000);
+		if (idx >= 10) 
+			idx = 10;
+		cinfo->overall.bwlock_time_dist_ms[idx]++;
+		if (idx == 0) {
+			idx = (int)(bwlock_ns / 100000);
+			cinfo->overall.bwlock_time_dist_us[idx]++;
+		}
+#endif
+
 		if (atomic_dec_and_test(&global->bw_locked_core)) {
 			/* unlock all throttled cores */
 			for_each_online_cpu(i) {
@@ -1301,6 +1333,13 @@ static void __reset_stats(void *info)
 	cinfo->overall.throttled_time_ns = 0;
 	cinfo->overall.throttled = 0;
 	cinfo->overall.throttled_error = 0;
+#if USE_BWLOCK_TIMING
+	cinfo->overall.bwlock_time_ns = 0;
+	cinfo->overall.bwlock_cnt = 0;
+	cinfo->bwlock_time = ktime_set(0,0);
+	memset(cinfo->overall.bwlock_time_dist_us, 0, sizeof(int)*10);
+	memset(cinfo->overall.bwlock_time_dist_ms, 0, sizeof(int)*11);
+#endif
 	memset(cinfo->overall.throttled_error_dist, 0, sizeof(int)*10);
 	cinfo->throttled_time = ktime_set(0,0);
 	smp_mb();
@@ -1389,6 +1428,60 @@ static const struct file_operations memguard_failcnt_fops = {
 	.release	= single_release,
 };
 
+#if USE_BWLOCK_TIMING
+static int memguard_bwlockcnt_show(struct seq_file *m, void *v)
+{
+	int i;
+	smp_mb();
+	/* total #of throttled periods */
+	seq_printf(m, "%25s", "bwlocked_cnt: ");
+	for_each_online_cpu(i) {
+		struct core_info *cinfo = per_cpu_ptr(core_info, i);
+		seq_printf(m, "%8lld ", cinfo->overall.bwlock_cnt);
+	}
+	seq_printf(m, "\n%25s", "bwlocked_avg_time(ns): ");
+	for_each_online_cpu(i) {
+		struct core_info *cinfo = per_cpu_ptr(core_info, i);
+		seq_printf(m, "%8lld ", cinfo->overall.bwlock_time_ns/(cinfo->overall.bwlock_cnt+1));
+	}
+	seq_printf(m, "\ncore-pct   100   200   300   400   500   600   700   800   900   1000 (us)\n");
+	seq_printf(m, "--------------------------------------------------------------------");
+	for_each_online_cpu(i) {
+		int idx;
+		struct core_info *cinfo = per_cpu_ptr(core_info, i);
+		seq_printf(m, "\n%4d    ", i);
+		for (idx = 0; idx < 10; idx++)
+			seq_printf(m, "%5d ",
+				cinfo->overall.bwlock_time_dist_us[idx]);
+	}
+
+	seq_printf(m, "\ncore-pct   1     2     3     4     5     6     7     8     9     10 (ms)\n");
+	seq_printf(m, "--------------------------------------------------------------------");
+	for_each_online_cpu(i) {
+		int idx;
+		struct core_info *cinfo = per_cpu_ptr(core_info, i);
+		seq_printf(m, "\n%4d    ", i);
+		for (idx = 0; idx < 10; idx++)
+			seq_printf(m, "%5d ",
+				cinfo->overall.bwlock_time_dist_ms[idx]);
+	}
+	seq_printf(m, "\n");
+	return 0;
+}
+
+static int memguard_bwlockcnt_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, memguard_bwlockcnt_show, NULL);
+}
+
+static const struct file_operations memguard_bwlockcnt_fops = {
+	.open		= memguard_bwlockcnt_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+#endif
+
 static int memguard_init_debugfs(void)
 {
 
@@ -1408,6 +1501,11 @@ static int memguard_init_debugfs(void)
 
 	debugfs_create_file("failcnt", 0644, memguard_dir, NULL,
 			    &memguard_failcnt_fops);
+#if USE_BWLOCK_TIMING
+	debugfs_create_file("bwlockcnt", 0644, memguard_dir, NULL,
+			    &memguard_bwlockcnt_fops);
+#endif
+
 	return 0;
 }
 

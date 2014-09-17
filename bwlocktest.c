@@ -26,11 +26,11 @@ int main()
 	uint64_t tmpdiff;
 	struct timespec start, end;
 	
-	bw_lock_init();
+	//  bw_lock_init();
 
 	clock_gettime(CLOCK_REALTIME, &start);	
 	for (long i = 0; i < ITER; i++) {
-		if (i % 10000 == 0) fprintf(stderr, "%ld\n", i);
+		// if (i % 10000 == 0) fprintf(stderr, "%ld\n", i);
 		bw_lock(1000, SOFT);
 		bw_unlock(&attr);
 	}

@@ -206,7 +206,7 @@ echo 16384 > /sys/kernel/debug/tracing/buffer_size_kb
 
 
 insmod ./memguard.ko
-do_test_fftw_cgroup
+# do_test_fftw_cgroup
 print_memguard_setting > setting.txt
 print_palloc_setting >> setting.txt
 rmmod memguard

@@ -27,7 +27,7 @@ fps-filter: fps-filter.cpp
 	$(CXX) -O2 -o $@ $^ -lrt
 
 bwlocktest: bwlock.c bwlocktest.c
-	$(CC) -std=gnu99 -O2 $^ -o $@ -lrt
+	$(CC) -std=gnu99 -O2 -g $^ -o $@ -lrt
 
 hrt-bwlock: hrt-bwlock.c bwlock.c
 	$(CC) -std=gnu99 -O2 $^ -o $@ -lrt

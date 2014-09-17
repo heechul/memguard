@@ -9,8 +9,8 @@
 /**************************************************************************
  * Conditional Compilation Options
  **************************************************************************/
-#define DEBUG 0
-
+#define USE_DEBUG  0
+#define USE_TIMING 1
 /**************************************************************************
  * Included Files
  **************************************************************************/
@@ -25,6 +25,8 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <sched.h>
+#include <sys/time.h>
+
 #include "bwlock.h"
 
 /**************************************************************************
@@ -36,7 +38,7 @@
 
 #define BUF_SIZE 64
 
-#if DEBUG==1
+#if USE_DEBUG==1
 #  define my_printf(fd, fmt, args...) fprintf(stdout, fmt, ##args)
 #else
 #  define my_printf(fd, fmt, args...) \
@@ -51,7 +53,15 @@
 		fprintf(stderr, "ERR: buf=%s, len=%d\n", buf, len); \
 		return -1;					    \
 	}							    \
-	return 0;						    \
+}
+#endif
+
+#if USE_TIMING==1
+unsigned long get_usecs()
+{
+	struct timeval         time;
+	gettimeofday(&time, NULL);
+	return (time.tv_sec * 1000000 +	time.tv_usec);
 }
 #endif
 
@@ -67,13 +77,16 @@ static int sysctl_max_bw_mb = 10000;
 /* static long r_min_mb = 1200;  */
 /* static long q_min_mb = 100; */
 
+static unsigned long prev_lock_time;
+
 /**************************************************************************
  * Local Implementation
  **************************************************************************/
 int bw_lock_init(void)
 {
+	char *str;
 	if (use_bw_lock == -1) {
-		char *str = getenv("USE_BWLOCK");
+		str = getenv("USE_BWLOCK");
 		if (str && atoi(str) == 1) 
 			use_bw_lock = 1; 
 		else
@@ -107,6 +120,11 @@ int bw_lock_init(void)
 
 int bw_lock(int reserve_mb, int attr)
 {
+#if USE_TIMING==1
+	if (getenv("USE_TIMING"))
+		prev_lock_time = get_usecs();
+#endif
+
 #if CALL_INIT_AUTO
 	if (fd_limit <= 0 && bw_lock_init() < 0)
 		return -1;
@@ -122,6 +140,11 @@ int bw_lock(int reserve_mb, int attr)
 
 int bw_unlock(int *attr)
 {
+#if USE_TIMING==1
+ 	if (getenv("USE_TIMING"))
+		fprintf(stderr, "%ld\n", get_usecs() - prev_lock_time);
+#endif
+
 #if CALL_INIT_AUTO
 	if (fd_limit <= 0 && bw_lock_init() < 0)
 		return -1;
