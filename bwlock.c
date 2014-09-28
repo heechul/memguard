@@ -33,9 +33,6 @@
  * Public Definitions
  **************************************************************************/
 #define MAX_NPROC 64
-
-#define CALL_INIT_AUTO 1
-
 #define BUF_SIZE 64
 
 #if USE_DEBUG==1
@@ -71,31 +68,22 @@ unsigned long get_usecs()
 static int fd_limit;
 static int fd_control;
 static int n_proc, core_id, node_id;
-static int use_bw_lock = -1; /* -1 - unknown, 0 - no, 1 - yes */
 
 static int sysctl_max_bw_mb = 10000;
 /* static long r_min_mb = 1200;  */
 /* static long q_min_mb = 100; */
 
 static unsigned long prev_lock_time;
-
+static int spinlock = 0;
 /**************************************************************************
  * Local Implementation
  **************************************************************************/
 int bw_lock_init(void)
 {
 	char *str;
-	if (use_bw_lock == -1) {
-		str = getenv("USE_BWLOCK");
-		if (str && atoi(str) == 1) 
-			use_bw_lock = 1; 
-		else
-			use_bw_lock = 0;
 
-		fprintf(stderr, "USE_BWLOCK=%d\n", use_bw_lock);
-	}
-
-	if (use_bw_lock == 0)
+	str = getenv("USE_BWLOCK");
+	if (!(str && atoi(str) == 1)) 
 		return -1;
 
 	n_proc = (int)sysconf(_SC_NPROCESSORS_ONLN);
@@ -120,39 +108,42 @@ int bw_lock_init(void)
 
 int bw_lock(int reserve_mb, int attr)
 {
+	while (__sync_lock_test_and_set(&spinlock, 1) == 1); 
+
 #if USE_TIMING==1
 	if (getenv("USE_TIMING"))
 		prev_lock_time = get_usecs();
 #endif
 
-#if CALL_INIT_AUTO
-	if (fd_limit <= 0 && bw_lock_init() < 0)
+	if (fd_limit <= 0 && bw_lock_init() < 0) {
+		spinlock = 0;
 		return -1;
-#else
-	if (fd_limit <= 0) return -1;
-#endif
+	}
 
 	if (reserve_mb == 0)
 		reserve_mb = sysctl_max_bw_mb;
 
 	my_printf(fd_limit, "bw_lock %d %d\n", core_id, reserve_mb);
+	spinlock = 0;
+
+	return 0; 
 }
 
 int bw_unlock(int *attr)
 {
+	while (__sync_lock_test_and_set(&spinlock, 1) == 1); 
 #if USE_TIMING==1
  	if (getenv("USE_TIMING"))
 		fprintf(stderr, "%ld\n", get_usecs() - prev_lock_time);
 #endif
 
-#if CALL_INIT_AUTO
-	if (fd_limit <= 0 && bw_lock_init() < 0)
+	if (fd_limit <= 0 && bw_lock_init() < 0) {
+		spinlock = 0;
 		return -1;
-#else
-	if (fd_limit <= 0) 
-		return -1;
-#endif
+	}
 	my_printf(fd_limit, "bw_unlock %d\n", core_id);
+	spinlock = 0;
+	return 0;
 }
 
 int set_attr(int attr)
