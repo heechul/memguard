@@ -35,6 +35,9 @@
 #define MAX_NPROC 64
 #define BUF_SIZE 64
 
+#define SPIN_LOCK(lock)   while (__sync_lock_test_and_set(&lock, 1) == 1)
+#define SPIN_UNLOCK(lock) lock = 0
+
 #if USE_DEBUG==1
 #  define my_printf(fd, fmt, args...) fprintf(stdout, fmt, ##args)
 #else
