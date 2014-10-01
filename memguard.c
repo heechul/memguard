@@ -14,7 +14,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define USE_DEBUG  1
-#define USE_BWLOCK_TIMING 1 
+#define USE_BWLOCK_TIMING 1
 
 /**************************************************************************
  * Included Files
@@ -721,7 +721,7 @@ static void period_timer_callback_slave(void *info)
 		cinfo->budget = cinfo->limit;
 	} else {
 		WARN_ON_ONCE(1);
-		trace_printk("both limit and weight = 0");
+		trace_printk("ERR: both limit and weight = 0");
 	}
 
 #if 0
@@ -737,8 +737,8 @@ static void period_timer_callback_slave(void *info)
 
 	if (cinfo->event->hw.sample_period != cinfo->budget) {
 		/* new budget is assigned */
-		trace_printk("MSG: new budget %d is assigned\n", 
-			     cinfo->budget);
+		DEBUG(trace_printk("MSG: new budget %d is assigned\n", 
+				   cinfo->budget));
 		cinfo->event->hw.sample_period = cinfo->budget;
 	}
 
@@ -1089,9 +1089,9 @@ static ssize_t memguard_limit_write(struct file *filp,
 					cinfo->weight = 0;
 				}
 			}
-			trace_printk("bw_lock: throttle cores except core%d\n", core);
+			// trace_printk("bw_lock: throttle cores except core%d\n", core);
 		}
-		trace_printk("bw_lock: core=%d input=%d\n", core, input);
+		// trace_printk("bw_lock: core=%d input=%d\n", core, input);
 
 #if USE_BWLOCK_TIMING
 		cinfo->bwlock_time = ktime_get();
@@ -1132,12 +1132,11 @@ static ssize_t memguard_limit_write(struct file *filp,
 					/* throttle unlocked cores */
 					cinfo->limit = MAXPERF_EVENTS;
 					cinfo->weight = 0;
-					trace_printk("bw_unlock: un-throttle core%d\n", i);
+					// trace_printk("bw_unlock: un-throttle core%d\n", i);
 				}
 			}
-
 		}
-		trace_printk("bw_unlock: unlock core%d\n", core);
+		// trace_printk("bw_unlock: unlock core%d\n", core);
 		goto out;
 	}
 
@@ -1321,7 +1320,7 @@ static const struct file_operations memguard_usage_fops = {
 static void __reset_stats(void *info)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
-	trace_printk("CPU%d\n", smp_processor_id());
+	DEBUG_USER(trace_printk("CPU%d\n", smp_processor_id()));
 
 	/* update local period information */
 	cinfo->period_cnt = 0;
