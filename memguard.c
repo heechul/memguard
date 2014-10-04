@@ -52,9 +52,10 @@
 #define CACHE_LINE_SIZE 64
 
 #if USE_DEBUG
-#  define DEBUG(x) x
+#  define DEBUG(x) 
 #  define DEBUG_RECLAIM(x) x
 #  define DEBUG_USER(x) x
+#  define DEBUG_BWLOCK(x) x
 #else
 #  define DEBUG(x) 
 #  define DEBUG_RECLAIM(x)
@@ -63,6 +64,8 @@
 
 #define BUF_SIZE 256
 #define PREDICTOR 1  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
+
+#define BWLOCK_THRESH 200
 
 /**************************************************************************
  * Public Types
@@ -101,6 +104,7 @@ struct core_info {
 	ktime_t throttled_time;  /* absolute time when throttled */
 
 #if USE_BWLOCK_TIMING
+	int bwlock_cnt; 
 	ktime_t bwlock_time;     /* absolute time when bwlocked */
 #endif
 	u64 old_val;             /* hold previous counter value */
@@ -735,6 +739,9 @@ static void period_timer_callback_slave(void *info)
 	/* budget can't be zero? */
 	cinfo->budget = max(cinfo->budget, 1);
 
+	/* initialize bwlock count */
+	cinfo->bwlock_cnt = 0;
+
 	if (cinfo->event->hw.sample_period != cinfo->budget) {
 		/* new budget is assigned */
 		DEBUG(trace_printk("MSG: new budget %d is assigned\n", 
@@ -1049,7 +1056,7 @@ static void __update_weight(void *info)
 
 #define MAXPERF_EVENTS 163840  /* 10000 MB/s */
 #define THROTTLE_EVENTS 1638   /*   100 MB/s */
- 
+
 static ssize_t memguard_limit_write(struct file *filp,
 				    const char __user *ubuf,
 				    size_t cnt, loff_t *ppos)
@@ -1125,6 +1132,8 @@ static ssize_t memguard_limit_write(struct file *filp,
 #endif
 
 		if (atomic_dec_and_test(&global->bw_locked_core)) {
+			if (cinfo->bwlock_cnt++ > BWLOCK_THRESH)
+				goto out;
 			/* unlock all throttled cores */
 			for_each_online_cpu(i) {
 				struct core_info *cinfo = per_cpu_ptr(core_info, i);
@@ -1206,6 +1215,7 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 	seq_printf(m, "g_budget_max_bw: %d MB/s, (%d)\n", g_budget_max_bw,
 		global->max_budget);
 	seq_printf(m, "bw_locked_core: %d\n", atomic_read(&global->bw_locked_core));
+
 	put_cpu();
 	return 0;
 }
@@ -1359,6 +1369,9 @@ static ssize_t memguard_failcnt_write(struct file *filp,
 	global->budget = global->period_cnt = 0;
 	global->start_tick = jiffies;
 	spin_unlock(&global->lock);
+
+	if (atomic_read(&global->bw_locked_core) != 0)
+		atomic_set(&global->bw_locked_core, 0);
 
 	smp_mb();
 	on_each_cpu(__reset_stats, NULL, 0);
@@ -1556,10 +1569,8 @@ static int memguard_idle_notifier(struct notifier_block *nb, unsigned long val,
 	spin_lock_irqsave(&global->lock, flags);
 	if (val == IDLE_START) {
 		cpumask_clear_cpu(smp_processor_id(), global->active_mask);
-#if USE_DEBUG
-		if (cpumask_equal(global->throttle_mask, global->active_mask))
-			trace_printk("DBG: last idle\n");
-#endif
+		DEBUG(if (cpumask_equal(global->throttle_mask, global->active_mask))
+			      trace_printk("DBG: last idle\n"););
 	} else
 		cpumask_set_cpu(smp_processor_id(), global->active_mask);
 	spin_unlock_irqrestore(&global->lock, flags);
@@ -1570,6 +1581,55 @@ static struct notifier_block memguard_idle_nb = {
 	.notifier_call = memguard_idle_notifier,
 };
 
+
+static int sysctl_maxperf_bw_mb = 10000;
+static int sysctl_throttle_bw_mb = 100;
+
+static void bw_lock(void)
+{
+	int core = smp_processor_id();
+	int i; 
+	struct core_info *cinfo = per_cpu_ptr(core_info, core);	
+	struct memguard_info *global = &memguard_info;
+
+	cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
+	if (atomic_inc_return(&global->bw_locked_core) == 1) {
+		/* initiate bw_lock */
+		for_each_online_cpu(i) {
+			struct core_info *cinfo = per_cpu_ptr(core_info, i);
+			if (i != core) {
+				/* throttle unlocked cores */
+				cinfo->limit = convert_mb_to_events(sysctl_throttle_bw_mb);
+				cinfo->weight = 0;
+			}
+		}
+		// trace_printk("bw_lock: throttle cores except core%d\n", core);
+	}
+	DEBUG_BWLOCK(trace_printk("bw_lock: core=%d\n", core));
+}
+
+static void bw_unlock(void)
+{
+	int i;
+	struct memguard_info *global = &memguard_info;
+	struct core_info *cinfo;
+	if (atomic_dec_and_test(&global->bw_locked_core)) {
+		/* unlock all throttled cores */
+		for_each_online_cpu(i) {
+			cinfo = per_cpu_ptr(core_info, i);
+			/* throttle unlocked cores */
+			cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
+			cinfo->weight = 0;
+		}
+	}
+
+	DEBUG_BWLOCK(trace_printk("bw_unlock: core=%d\n", smp_processor_id()));
+	
+}
+
+/* should be defined in the scheduler code */
+extern void register_bw_lock_callback(void *func_ptr);
+extern void register_bw_unlock_callback(void *func_ptr);
 
 int init_module( void )
 {
@@ -1675,6 +1735,9 @@ int init_module( void )
 		      HRTIMER_MODE_REL_PINNED);
 	put_cpu();
 
+	register_bw_lock_callback(bw_lock);
+	register_bw_unlock_callback(bw_unlock);
+
 	idle_notifier_register(&memguard_idle_nb);
 	return 0;
 }
@@ -1684,6 +1747,9 @@ void cleanup_module( void )
 	int i;
 
 	struct memguard_info *global = &memguard_info;
+
+	register_bw_lock_callback(NULL);
+	register_bw_unlock_callback(NULL);
 
 	smp_mb();
 
