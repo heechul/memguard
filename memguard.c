@@ -52,9 +52,9 @@
 #define CACHE_LINE_SIZE 64
 
 #if USE_DEBUG
-#  define DEBUG(x) 
-#  define DEBUG_RECLAIM(x) x
-#  define DEBUG_USER(x) x
+#  define DEBUG(x) x
+#  define DEBUG_RECLAIM(x)
+#  define DEBUG_USER(x)
 #  define DEBUG_BWLOCK(x) x
 #else
 #  define DEBUG(x) 
@@ -141,7 +141,7 @@ struct memguard_info {
 	cpumask_var_t throttle_mask;
 	cpumask_var_t active_mask;
 	atomic_t wsum;
-	atomic_t bw_locked_core;
+	int bwlocked_cores;
 	struct hrtimer hr_timer;
 };
 
@@ -178,11 +178,15 @@ static const int prio_to_weight[40] = {
  /*  15 */        36,        29,        23,        18,        15,
 };
 
+/* should be defined in the scheduler code */
+static int sysctl_maxperf_bw_mb = 10000;
+static int sysctl_throttle_bw_mb = 100;
+
 /**************************************************************************
  * External Function Prototypes
  **************************************************************************/
-extern unsigned long nr_running_cpu(int cpu);
 extern int idle_cpu(int cpu);
+extern int nr_bwlocked_cores(void);
 
 /**************************************************************************
  * Local Function Prototypes
@@ -690,6 +694,25 @@ static void period_timer_callback_slave(void *info)
 	cpumask_set_cpu(cpu, global->active_mask);
 	spin_unlock(&global->lock);
 
+
+	/* unthrottle tasks (if any) */
+	if (cinfo->throttled_task)
+		target = (struct task_struct *)cinfo->throttled_task;
+	else
+		target = current;
+	cinfo->throttled_task = NULL;
+
+	/* bwlock check */
+	if (global->bwlocked_cores > 0) {
+		if (target->bwlock_val > 0)
+			cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
+		else
+			cinfo->limit = convert_mb_to_events(sysctl_throttle_bw_mb);
+	} else
+		cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
+
+	DEBUG_BWLOCK(trace_printk("%s|bwlock_val %d\n", (current)?current->comm:"null", 
+				  current->bwlock_val));
 	DEBUG(trace_printk("%p|New period %ld. global->budget=%d\n",
 			   cinfo->throttled_task,
 			   cinfo->period_cnt, global->budget));
@@ -749,12 +772,6 @@ static void period_timer_callback_slave(void *info)
 		cinfo->event->hw.sample_period = cinfo->budget;
 	}
 
-	/* unthrottle tasks (if any) */
-	if (cinfo->throttled_task)
-		target = (struct task_struct *)cinfo->throttled_task;
-	else
-		target = current;
-	cinfo->throttled_task = NULL;
 
 	/* per-task donation policy */
 	if (!g_use_reclaim || rt_task(target)) {
@@ -851,6 +868,8 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	if (orun > 1)
 		trace_printk("ERR: timer overrun %d at period %ld\n",
 			    orun, new_period);
+
+	global->bwlocked_cores = nr_bwlocked_cores();
 
 	memguard_on_each_cpu_mask(active_mask,
 		period_timer_callback_slave, (void *)new_period, 0);
@@ -1067,87 +1086,9 @@ static ssize_t memguard_limit_write(struct file *filp,
 	int max_budget = 0;
 	int use_mb = 0;
 	struct memguard_info *global = &memguard_info;
-	struct core_info *cinfo;
 
 	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0) 
 		return 0;
-
-
-	/* bw_lock support */
-	if (!strncmp(p, "bw_lock ", 8)) {
-		int input, core; 
-		unsigned long events;
-		p += 8; 
-		sscanf(p, "%d %d", &core, &input); /* coreid, bw_mb */
-
-		events = (unsigned long)convert_mb_to_events(input);
-
-		cinfo = per_cpu_ptr(core_info, core);
-		cinfo->limit = events;
-		cinfo->weight = 0;
-
-		if (atomic_inc_return(&global->bw_locked_core) == 1) {
-			/* initiate bw_lock */
-			for_each_online_cpu(i) {
-				struct core_info *cinfo = per_cpu_ptr(core_info, i);
-				if (i != core) {
-					/* throttle unlocked cores */
-					cinfo->limit = THROTTLE_EVENTS;
-					cinfo->weight = 0;
-				}
-			}
-			// trace_printk("bw_lock: throttle cores except core%d\n", core);
-		}
-		// trace_printk("bw_lock: core=%d input=%d\n", core, input);
-
-#if USE_BWLOCK_TIMING
-		cinfo->bwlock_time = ktime_get();
-#endif
-		goto out;
-		
-	} else if (!strncmp(p, "bw_unlock ", 10)) {
-		int core; 
-#if USE_BWLOCK_TIMING
-		u64 bwlock_ns; int idx;
-#endif
-		p += 10; 
-		sscanf(p, "%d", &core); 
-
-		cinfo = per_cpu_ptr(core_info, core);
-		cinfo->limit = MAXPERF_EVENTS;
-		cinfo->weight = 0;
-
-#if USE_BWLOCK_TIMING
-		bwlock_ns = (ktime_get().tv64 - cinfo->bwlock_time.tv64);
-		cinfo->overall.bwlock_time_ns += bwlock_ns;
-		cinfo->overall.bwlock_cnt ++; 
-		idx = (int)(bwlock_ns / 1000000);
-		if (idx >= 10) 
-			idx = 10;
-		cinfo->overall.bwlock_time_dist_ms[idx]++;
-		if (idx == 0) {
-			idx = (int)(bwlock_ns / 100000);
-			cinfo->overall.bwlock_time_dist_us[idx]++;
-		}
-#endif
-
-		if (atomic_dec_and_test(&global->bw_locked_core)) {
-			if (cinfo->bwlock_cnt++ > BWLOCK_THRESH)
-				goto out;
-			/* unlock all throttled cores */
-			for_each_online_cpu(i) {
-				struct core_info *cinfo = per_cpu_ptr(core_info, i);
-				if (cinfo->limit == THROTTLE_EVENTS) {
-					/* throttle unlocked cores */
-					cinfo->limit = MAXPERF_EVENTS;
-					cinfo->weight = 0;
-					// trace_printk("bw_unlock: un-throttle core%d\n", i);
-				}
-			}
-		}
-		// trace_printk("bw_unlock: unlock core%d\n", core);
-		goto out;
-	}
 
 	if (!strncmp(p, "mb ", 3)) {
 		use_mb = 1;
@@ -1177,7 +1118,6 @@ static ssize_t memguard_limit_write(struct file *filp,
 	global->max_budget = max_budget;
 	g_budget_max_bw = convert_events_to_mb(max_budget);
 
-out:
 	smp_mb();
 	return cnt;
 }
@@ -1214,7 +1154,7 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 	}
 	seq_printf(m, "g_budget_max_bw: %d MB/s, (%d)\n", g_budget_max_bw,
 		global->max_budget);
-	seq_printf(m, "bw_locked_core: %d\n", atomic_read(&global->bw_locked_core));
+	seq_printf(m, "bwlocked_core: %d\n", nr_bwlocked_cores());
 
 	put_cpu();
 	return 0;
@@ -1370,9 +1310,6 @@ static ssize_t memguard_failcnt_write(struct file *filp,
 	global->start_tick = jiffies;
 	spin_unlock(&global->lock);
 
-	if (atomic_read(&global->bw_locked_core) != 0)
-		atomic_set(&global->bw_locked_core, 0);
-
 	smp_mb();
 	on_each_cpu(__reset_stats, NULL, 0);
 	return cnt;
@@ -1381,7 +1318,6 @@ static ssize_t memguard_failcnt_write(struct file *filp,
 static int memguard_failcnt_show(struct seq_file *m, void *v)
 {
 	int i;
-	struct memguard_info *global = &memguard_info;
 
 	smp_mb();
 	/* total #of throttled periods */
@@ -1420,10 +1356,6 @@ static int memguard_failcnt_show(struct seq_file *m, void *v)
 	seq_printf(m, "\ntotal_periods: ");
 	for_each_online_cpu(i)
 		seq_printf(m, "%ld ", per_cpu_ptr(core_info, i)->period_cnt);
-
-	seq_printf(m, "\nbw_locked_core: %d\n", atomic_read(&global->bw_locked_core));
-
-
 	return 0;
 }
 
@@ -1582,54 +1514,6 @@ static struct notifier_block memguard_idle_nb = {
 };
 
 
-static int sysctl_maxperf_bw_mb = 10000;
-static int sysctl_throttle_bw_mb = 100;
-
-static void bw_lock(void)
-{
-	int core = smp_processor_id();
-	int i; 
-	struct core_info *cinfo = per_cpu_ptr(core_info, core);	
-	struct memguard_info *global = &memguard_info;
-
-	cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
-	if (atomic_inc_return(&global->bw_locked_core) == 1) {
-		/* initiate bw_lock */
-		for_each_online_cpu(i) {
-			struct core_info *cinfo = per_cpu_ptr(core_info, i);
-			if (i != core) {
-				/* throttle unlocked cores */
-				cinfo->limit = convert_mb_to_events(sysctl_throttle_bw_mb);
-				cinfo->weight = 0;
-			}
-		}
-		// trace_printk("bw_lock: throttle cores except core%d\n", core);
-	}
-	DEBUG_BWLOCK(trace_printk("bw_lock: core=%d\n", core));
-}
-
-static void bw_unlock(void)
-{
-	int i;
-	struct memguard_info *global = &memguard_info;
-	struct core_info *cinfo;
-	if (atomic_dec_and_test(&global->bw_locked_core)) {
-		/* unlock all throttled cores */
-		for_each_online_cpu(i) {
-			cinfo = per_cpu_ptr(core_info, i);
-			/* throttle unlocked cores */
-			cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
-			cinfo->weight = 0;
-		}
-	}
-
-	DEBUG_BWLOCK(trace_printk("bw_unlock: core=%d\n", smp_processor_id()));
-	
-}
-
-/* should be defined in the scheduler code */
-extern void register_bw_lock_callback(void *func_ptr);
-extern void register_bw_unlock_callback(void *func_ptr);
 
 int init_module( void )
 {
@@ -1656,8 +1540,6 @@ int init_module( void )
 	global->start_tick = jiffies;
 	global->period_in_ktime = ktime_set(0, g_period_us * 1000);
 	global->max_budget = convert_mb_to_events(g_budget_max_bw);
-
-	atomic_set(&global->bw_locked_core, 0);
 
 	/* initialize all online cpus to be active */
 	cpumask_copy(global->active_mask, cpu_online_mask);
@@ -1735,9 +1617,6 @@ int init_module( void )
 		      HRTIMER_MODE_REL_PINNED);
 	put_cpu();
 
-	register_bw_lock_callback(bw_lock);
-	register_bw_unlock_callback(bw_unlock);
-
 	idle_notifier_register(&memguard_idle_nb);
 	return 0;
 }
@@ -1747,9 +1626,6 @@ void cleanup_module( void )
 	int i;
 
 	struct memguard_info *global = &memguard_info;
-
-	register_bw_lock_callback(NULL);
-	register_bw_unlock_callback(NULL);
 
 	smp_mb();
 

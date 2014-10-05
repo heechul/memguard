@@ -1,10 +1,13 @@
+#define _GNU_SOURCE         /* See feature_test_macros(7) */
+#include <unistd.h>
+#include <sys/syscall.h>   /* For SYS_xxx definitions */
 #include <stdio.h>
 #include <stdint.h>
 #include <time.h>
 
-#include "bwlock.h"
+#define SYS_bwlock 323
 
-#define ITER 100000
+#define ITER 1000000
 
 uint64_t get_elapsed(struct timespec *start, struct timespec *end)
 {
@@ -23,18 +26,31 @@ uint64_t get_elapsed(struct timespec *start, struct timespec *end)
 int main()
 {
 	int attr;
+	long int i;
 	uint64_t tmpdiff;
 	struct timespec start, end;
 	
-	//  bw_lock_init();
-
 	clock_gettime(CLOCK_REALTIME, &start);	
 	for (long i = 0; i < ITER; i++) {
 		// if (i % 10000 == 0) fprintf(stderr, "%ld\n", i);
-		bw_lock(1000, SOFT);
-		bw_unlock(&attr);
+		syscall(SYS_bwlock, getpid(), 1);
+		syscall(SYS_bwlock, getpid(), 0);
 	}
 	clock_gettime(CLOCK_REALTIME, &end);
 	tmpdiff = get_elapsed(&start, &end);
 	printf("iter=%d %.2f ns\n", ITER, (double) tmpdiff/ITER);
+
+
+	printf("enter memory critical section\n");
+	syscall(SYS_bwlock, getpid(), 1);
+
+	clock_gettime(CLOCK_REALTIME, &start);	
+repeat:
+
+	clock_gettime(CLOCK_REALTIME, &end);
+	tmpdiff = get_elapsed(&start, &end);
+	if (tmpdiff < 5000000000) goto repeat;
+
+	syscall(SYS_bwlock, getpid(), 0);
+	printf("exit memory critical section\n");
 }
