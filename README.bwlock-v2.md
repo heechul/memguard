@@ -30,12 +30,13 @@ Usage
 If you do the following, the <pid> process will be bw locked whenever 
 it is scheduled by the scheduler. 
 
-
+```
   ./bwlockset <pid> <bwlock_value>
 
 Example)
   $ ./bwlockset `pidof X` 1
   set pid=2559 val=1
+```
 
 ## fine-grain locking
 
