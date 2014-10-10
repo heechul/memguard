@@ -14,7 +14,7 @@
 
 #define SYS_bwlock 323
 
-#define bw_lock()   syscall(SYS_bwlock, getpid(), 1)
-#define bw_unlock() syscall(SYS_bwlock, getpid(), 0)
+#define bw_lock()   syscall(SYS_bwlock, 0, 1)
+#define bw_unlock() syscall(SYS_bwlock, 0, 0)
 
 #endif /* BWLOCK_H */
