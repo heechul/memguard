@@ -20,6 +20,7 @@ be a normal user
   git checkout rtas15-bwlockv2
      (or $ git checkout -b rtas15-bwlockv2 origin/rtas15-bwlockv2 )
   $ make 
+  $ insmod memguard.ko
 ```
 
 Usage
