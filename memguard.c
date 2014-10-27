@@ -52,14 +52,16 @@
 #define CACHE_LINE_SIZE 64
 
 #if USE_DEBUG
-#  define DEBUG(x) x
+#  define DEBUG(x)
 #  define DEBUG_RECLAIM(x)
 #  define DEBUG_USER(x)
 #  define DEBUG_BWLOCK(x) x
+#  define DEBUG_PROFILE(x) x
 #else
 #  define DEBUG(x) 
 #  define DEBUG_RECLAIM(x)
 #  define DEBUG_USER(x)
+#  define DEBUG_PROFILE(x)
 #endif
 
 #define BUF_SIZE 256
@@ -155,6 +157,7 @@ static struct core_info __percpu *core_info;
 static char *g_hw_type = "";
 static int g_period_us = 1000;
 static int g_use_reclaim = 0; /* minimum remaining time to reclaim */
+static int g_use_bwlock = 1;
 static int g_use_exclusive = 0;
 static int g_use_task_priority = 0;
 static int g_budget_pct[MAX_NCPUS];
@@ -214,6 +217,9 @@ MODULE_PARM_DESC(g_hw_type, "hardware type");
 module_param(g_use_reclaim, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_use_reclaim, "enable/disable reclaim");
 
+module_param(g_use_bwlock, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(g_use_bwlock, "enable/disable reclaim");
+
 module_param(g_period_us, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_period_us, "throttling period in usec");
 
@@ -226,6 +232,21 @@ MODULE_PARM_DESC(g_budget_max_bw, "maximum memory bandwidth (MB/s)");
 /**************************************************************************
  * Module main code
  **************************************************************************/
+
+static int mg_nr_bwlocked_cores(void)
+{
+	struct memguard_info *global = &memguard_info;
+	int i;
+	int nr = nr_bwlocked_cores(); /* check running tasks */
+	for_each_cpu(i, global->throttle_mask) {
+		struct task_struct *t = 
+			per_cpu_ptr(core_info, i)->throttled_task;
+		if (t && t->bwlock_val > 0)
+			nr += t->bwlock_val;
+	}
+	return nr;
+}
+
 
 /* similar to on_each_cpu_mask(), but this must be called with IRQ disabled */
 static void memguard_on_each_cpu_mask(const struct cpumask *mask, 
@@ -384,12 +405,12 @@ void update_statistics(struct core_info *cinfo)
 		cinfo->exclusive_mode = 0;
 		cinfo->overall.exclusive++;
 	}
-	DEBUG(trace_printk("%lld %d %p CPU%d org: %d cur: %d excl(%d): %lld\n",
+	DEBUG_PROFILE(trace_printk("%lld %d %p CPU%d org: %d cur: %d period: %ld\n",
 			   new, used, cinfo->throttled_task,
 			   smp_processor_id(), 
 			   cinfo->budget,
 			   cinfo->cur_budget,
-			   g_use_exclusive, exclusive_vtime));
+			   cinfo->period_cnt));
 }
 
 
@@ -703,16 +724,19 @@ static void period_timer_callback_slave(void *info)
 	cinfo->throttled_task = NULL;
 
 	/* bwlock check */
-	if (global->bwlocked_cores > 0) {
-		if (target->bwlock_val > 0)
+	if (g_use_bwlock) {
+		if (global->bwlocked_cores > 0) {
+			if (target->bwlock_val > 0)
+				cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
+			else
+				cinfo->limit = convert_mb_to_events(sysctl_throttle_bw_mb);
+		} else
 			cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
-		else
-			cinfo->limit = convert_mb_to_events(sysctl_throttle_bw_mb);
-	} else
-		cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
+	}
 
-	DEBUG_BWLOCK(trace_printk("%s|bwlock_val %d\n", (current)?current->comm:"null", 
-				  current->bwlock_val));
+	DEBUG_BWLOCK(trace_printk("%s|bwlock_val %d|g->bwlocked_cores %d\n", 
+				  (current)?current->comm:"null", 
+				  current->bwlock_val, global->bwlocked_cores));
 	DEBUG(trace_printk("%p|New period %ld. global->budget=%d\n",
 			   cinfo->throttled_task,
 			   cinfo->period_cnt, global->budget));
@@ -869,7 +893,7 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 		trace_printk("ERR: timer overrun %d at period %ld\n",
 			    orun, new_period);
 
-	global->bwlocked_cores = nr_bwlocked_cores();
+	global->bwlocked_cores = mg_nr_bwlocked_cores();
 
 	memguard_on_each_cpu_mask(active_mask,
 		period_timer_callback_slave, (void *)new_period, 0);
@@ -1154,7 +1178,7 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 	}
 	seq_printf(m, "g_budget_max_bw: %d MB/s, (%d)\n", g_budget_max_bw,
 		global->max_budget);
-	seq_printf(m, "bwlocked_core: %d\n", nr_bwlocked_cores());
+	seq_printf(m, "bwlocked_core: %d\n", global->bwlocked_cores);
 
 	put_cpu();
 	return 0;
