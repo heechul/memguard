@@ -13,7 +13,7 @@ clean:
 	rm hrt thr fps fps-filter
 	rm *~
 
-bench: hrt thr fps-filter fps cpuhog matrix bwlocktest hrt-bwlock
+bench: hrt thr fps-filter fps cpuhog matrix bwlocktest bwlockset hrt-bwlock
 
 hrt: hrt.c
 	$(CC) -O2 -o $@ $^ -lrt
@@ -26,9 +26,12 @@ matrix: matrix.c
 fps-filter: fps-filter.cpp
 	$(CXX) -O2 -o $@ $^ -lrt
 
-bwlocktest: bwlock.c bwlocktest.c
+bwlocktest: bwlocktest.c
 	$(CC) -std=gnu99 -O2 -g $^ -o $@ -lrt
 
-hrt-bwlock: hrt-bwlock.c bwlock.c
+bwlockset: bwlockset.c
+	$(CC) -std=gnu99 -O2 -g $^ -o $@ -lrt
+
+hrt-bwlock: hrt-bwlock.c
 	$(CC) -std=gnu99 -O2 $^ -o $@ -lrt
 

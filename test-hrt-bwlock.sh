@@ -31,7 +31,7 @@ do_load()
     cores="$1"
 # co-runner
     for c in $cores; do
-	./bandwidth -c $c -t 100000 -a write &
+	./bandwidth -c $c -t 100000 -a write > corun.c$c.txt &
     done
 }
 
@@ -41,48 +41,11 @@ do_load_cgroup()
 # co-runner
     for c in $cores; do
 	echo $$ > /sys/fs/cgroup/core$c/tasks
-	./bandwidth -c $c -t 100000 -a write &
+	./bandwidth -c $c -t 100000 -a write > corun.c$c.txt &
     done
 }
 
 # test
-do_test_fftw_solo()
-{
-    echo "" > /sys/kernel/debug/tracing/trace
-    time taskset -c 0 ./fftw-bench -s 1024x1024
-    cat /sys/kernel/debug/tracing/trace > hrt-bwlock.trace
-}
-
-do_test_fftw()
-{
-    do_load "1 2 3"
-    echo "" > /sys/kernel/debug/tracing/trace
-    time taskset -c 0 ./fftw-bench -s 1024x1024
-    cat /sys/kernel/debug/tracing/trace > hrt-bwlock.trace
-    killall -2 bandwidth
-}
-
-do_test_fftw_cgroup()
-{
-    echo "Enable PALLOC"
-    echo 1 > /sys/kernel/debug/palloc/use_palloc
-    echo 1 > /sys/kernel/debug/palloc/debug_level
-    echo 1 > /sys/kernel/debug/palloc/alloc_balance # <- has a bug in ARM
-
-    echo "Set PALLOC colors"
-    echo 0 > /sys/fs/cgroup/core0/palloc.bins
-    echo 0 > /sys/fs/cgroup/core1/palloc.bins
-    echo 0 > /sys/fs/cgroup/core2/palloc.bins
-    echo 0 > /sys/fs/cgroup/core3/palloc.bins
-
-    echo "Launch co-runners"
-    do_load_cgroup "1 2 3"
-    echo "" > /sys/kernel/debug/tracing/trace
-    echo $$ > /sys/fs/cgroup/core0/tasks
-    time taskset -c 0 ./fftw-bench -s 1024x1024
-    cat /sys/kernel/debug/tracing/trace > hrt-bwlock.trace
-    killall -2 bandwidth
-}
 
 print_palloc_setting()
 {
@@ -91,6 +54,14 @@ print_palloc_setting()
 	echo -n "Core${c}: "
 	cat /sys/fs/cgroup/core$c/palloc.bins
     done
+    echo -n "use_palloc: "
+    cat /sys/kernel/debug/palloc/use_palloc
+    echo -n "debug_level: "
+    cat /sys/kernel/debug/palloc/debug_level
+    echo -n "alloc_ballance: "
+    cat /sys/kernel/debug/palloc/alloc_balance # <- has a bug in ARM
+    echo -n "stats:"
+    cat /sys/kernel/debug/palloc/control
 }
 
 print_memguard_setting()
@@ -98,10 +69,11 @@ print_memguard_setting()
     echo "> MemGuard settings:"
     cat /sys/kernel/debug/memguard/limit
     cat /sys/kernel/debug/memguard/control
+    cat /sys/kernel/debug/memguard/bwlockcnt
 }
 
 
-do_test_bw_lock()
+do_test_bwlock()
 {
     do_load "1 2 3"
     echo "" > /sys/kernel/debug/tracing/trace
@@ -119,7 +91,7 @@ do_test_mg()
     killall -2 bandwidth
 }
 
-do_test_bw_lock_2()
+do_test_bwlock_2()
 {
     do_load "2 3"
     echo "" > /sys/kernel/debug/tracing/trace
@@ -152,7 +124,7 @@ plot()
     # file msut be xxx.dat form
     start=$1
     finish=$2
-    file="hrt-bw_lock_${start}-${finish}"
+    file="hrt-bwlock_${start}-${finish}"
     cat > ${file}.scr <<EOF
 set terminal postscript eps enhanced color "Times-Roman" 22
 set yrange [0:100000]
@@ -172,7 +144,7 @@ plot_core()
     core=$1
     start=$2
     finish=$3
-    file="hrt-bw_lock_C${core}-${start}-${finish}"
+    file="hrt-bwlock_C${core}-${start}-${finish}"
     cat > ${file}.scr <<EOF
 set terminal postscript eps enhanced color "Times-Roman" 22
 set yrange [0:100000]
@@ -202,13 +174,27 @@ do_graph()
     plot_core 1 0 1500
 }
 
-echo 16384 > /sys/kernel/debug/tracing/buffer_size_kb
+copy_data()
+{
+    echo "Copying produced data"
+    dirname=$1
+    mkdir -p $dirname || echo "WARN: overwrite"
+    cp setting.txt hrt-bwlock*.pdf hrt-bwlock*.dat $dirname
+    chown heechul.heechul $dirname
+    grep "B/W" corun.c*.txt > $dirname/corun.txt
+    cp -r $dirname ~/Dropbox/tmp
 
+    echo "Enter to continue:"
+    read
+}
+
+echo 16384 > /sys/kernel/debug/tracing/buffer_size_kb
+tag=`date +"%m%d%y"`
 
 insmod ./memguard.ko
-# do_test_fftw_cgroup
+do_test_bwlock
 print_memguard_setting > setting.txt
-print_palloc_setting >> setting.txt
+# print_palloc_setting >> setting.txt
 rmmod memguard
 
 
@@ -226,6 +212,4 @@ rmmod memguard
 # rmmod memguard
 
 do_graph
-cp -v setting.txt ~/Dropbox/tmp
-cp -v hrt-bw*.pdf hrt-bw*.dat ~/Dropbox/tmp
-chown heechul.heechul ~/Dropbox/tmp/*
+copy_data hrt-bwlock-$tag

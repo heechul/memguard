@@ -8,16 +8,22 @@
 
 #ifndef BWLOCK_H
 #define BWLOCK_H
+// #define _GNU_SOURCE         /* See feature_test_macros(7) */
+#include <unistd.h>
+#include <sys/syscall.h>   /* For SYS_xxx definitions */
+#include <sys/time.h>
+#include <stdio.h>
 
-#define HARD 0
-#define SOFT 1 
+#define SYS_bwlock 323
 
-int bw_lock_init(void);
-  
-int bw_lock(int reserve_mb, int attr);
+#define USE_BWLOCK 1
 
-int bw_unlock(int *attr);
-
-int set_attr(int attr);
+#if USE_BWLOCK
+#  define bw_lock()    syscall(SYS_bwlock, 0, 1)
+#  define bw_unlock()  syscall(SYS_bwlock, 0, 0)
+#else
+#  define bw_lock()    
+#  define bw_unlock()  
+#endif
 
 #endif /* BWLOCK_H */
