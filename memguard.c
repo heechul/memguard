@@ -115,6 +115,9 @@ struct core_info {
 	struct irq_work	pending; /* delayed work for NMIs */
 	struct perf_event *event;/* performance counter i/f */
 
+	struct perf_event *cycle_event; /* performance counter i/f */
+	struct perf_event *instr_event; /* performance counter i/f */
+
 	struct task_struct *throttle_thread;  /* forced throttle idle thread */
 	wait_queue_head_t throttle_evt; /* throttle wait queue */
 
@@ -783,35 +786,6 @@ static void period_timer_callback_slave(void *info)
 	cinfo->event->pmu->start(cinfo->event, PERF_EF_RELOAD);
 }
 
-static void __init_per_core(void *info)
-{
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-	memset(cinfo, 0, sizeof(struct core_info));
-
-	smp_rmb();
-
-	/* initialize per_event structure */
-	cinfo->event = (struct perf_event *)info;
-
-	/* initialize budget */
-	cinfo->budget = cinfo->limit = cinfo->event->hw.sample_period;
-
-	/* create idle threads */
-	cinfo->throttled_task = NULL;
-
-	init_waitqueue_head(&cinfo->throttle_evt);
-
-	/* initialize statistics */
-	__reset_stats(cinfo);
-
-	print_core_info(smp_processor_id(), cinfo);
-
-	smp_wmb();
-
-	/* initialize nmi irq_work_queue */
-	init_irq_work(&cinfo->pending, memguard_process_overflow);
-}
-
 /**
  *   called while cpu_base->lock is held by hrtimer_interrupt()
  */
@@ -851,6 +825,7 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	DEBUG(trace_printk("master end\n"));
 	return HRTIMER_RESTART;
 }
+
 
 static struct perf_event *init_counter(int cpu, int budget)
 {
@@ -1618,11 +1593,9 @@ int init_module( void )
 
 	pr_info("Initilizing perf counter\n");
 	core_info = alloc_percpu(struct core_info);
-	smp_mb();
 
 	get_online_cpus();
 	for_each_online_cpu(i) {
-		struct perf_event *event;
 		struct core_info *cinfo = per_cpu_ptr(core_info, i);
 
 		int budget, mb;
@@ -1634,15 +1607,29 @@ int init_module( void )
 		pr_info("budget[%d] = %d (%d pct, %d MB/s)\n", i,
 		       budget,g_budget_pct[i], mb);
 
+		/* initialize per-core data structure */
+		memset(cinfo, 0, sizeof(struct core_info));
+
 		/* create performance counter */
-		event = init_counter(i, budget);
-		if (!event)
+		cinfo->event = init_counter(i, budget);
+		if (!cinfo->event)
 			break;
 
-		/* initialize per-core data structure */
-		smp_call_function_single(i, __init_per_core, (void *)event, 1);
-		smp_mb();
+		/* initialize budget */
+		cinfo->budget = cinfo->limit = cinfo->event->hw.sample_period;
 
+		/* throttled task pointer */
+		cinfo->throttled_task = NULL;
+
+		init_waitqueue_head(&cinfo->throttle_evt);
+
+		/* initialize statistics */
+		__reset_stats(cinfo);
+
+		print_core_info(smp_processor_id(), cinfo);
+
+		/* initialize nmi irq_work_queue */
+		init_irq_work(&cinfo->pending, memguard_process_overflow);
 
 		/* create and wake-up throttle threads */
 		cinfo->throttle_thread =
@@ -1655,6 +1642,7 @@ int init_module( void )
 		kthread_bind(cinfo->throttle_thread, i);
 		wake_up_process(cinfo->throttle_thread);
 	}
+	smp_mb();
 
 	register_hotcpu_notifier(&memguard_cpu_notifier);
 
