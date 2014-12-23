@@ -33,8 +33,8 @@ int main()
 	clock_gettime(CLOCK_REALTIME, &start);	
 	for (long i = 0; i < ITER; i++) {
 		// if (i % 10000 == 0) fprintf(stderr, "%ld\n", i);
-		syscall(SYS_bwlock, getpid(), 1);
-		syscall(SYS_bwlock, getpid(), 0);
+		syscall(SYS_bwlock, 0, 1);
+		syscall(SYS_bwlock, 0, 0);
 	}
 	clock_gettime(CLOCK_REALTIME, &end);
 	tmpdiff = get_elapsed(&start, &end);
@@ -42,15 +42,15 @@ int main()
 
 
 	printf("enter memory critical section\n");
-	syscall(SYS_bwlock, getpid(), 1);
+	syscall(SYS_bwlock, 0, 1);
 
 	clock_gettime(CLOCK_REALTIME, &start);	
 repeat:
 
 	clock_gettime(CLOCK_REALTIME, &end);
 	tmpdiff = get_elapsed(&start, &end);
-	if (tmpdiff < 5000000000) goto repeat;
+	if (tmpdiff < 50000000000) goto repeat;
 
-	syscall(SYS_bwlock, getpid(), 0);
+	syscall(SYS_bwlock, 0, 0);
 	printf("exit memory critical section\n");
 }

@@ -14,7 +14,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define USE_DEBUG  1
-#define USE_BWLOCK_TIMING 1
+#define USE_RCFS   1
 
 /**************************************************************************
  * Included Files
@@ -57,11 +57,14 @@
 #  define DEBUG_USER(x)
 #  define DEBUG_BWLOCK(x) x
 #  define DEBUG_PROFILE(x) x
+#  define DEBUG_RCFS(x) x
 #else
 #  define DEBUG(x) 
 #  define DEBUG_RECLAIM(x)
 #  define DEBUG_USER(x)
+#  define DEBUG_BWLOCK(x)
 #  define DEBUG_PROFILE(x)
+#  define DEBUG_RCFS(x)
 #endif
 
 #define BUF_SIZE 256
@@ -79,12 +82,6 @@ struct memstat{
 	int throttled;           /* throttled period count */
 	u64 throttled_error;     /* throttled & error */
 	int throttled_error_dist[10]; /* pct distribution */
-#if USE_BWLOCK_TIMING
-	u64 bwlock_time_ns;           /* total bwlock time in ns */
-	u64 bwlock_cnt;               /* total #of bwlock */
-	int bwlock_time_dist_us[10];  /* bwlock time distribution 0-1000us */
-	int bwlock_time_dist_ms[11];  /* bwlock time distribution 0-10ms */
-#endif
 	int exclusive;           /* exclusive period count */
 	u64 exclusive_ns;        /* exclusive mode real-time duration */
 	u64 exclusive_bw;        /* exclusive mode used bandwidth */
@@ -105,10 +102,6 @@ struct core_info {
 	volatile struct task_struct * throttled_task;
 	ktime_t throttled_time;  /* absolute time when throttled */
 
-#if USE_BWLOCK_TIMING
-	int bwlock_cnt; 
-	ktime_t bwlock_time;     /* absolute time when bwlocked */
-#endif
 	u64 old_val;             /* hold previous counter value */
 	int prev_throttle_error; /* check whether there was throttle error in 
 				    the previous period */
@@ -121,8 +114,8 @@ struct core_info {
 	struct irq_work	pending; /* delayed work for NMIs */
 	struct perf_event *event;/* performance counter i/f */
 
-	struct perf_event *cycle_event; /* performance counter i/f */
-	struct perf_event *instr_event; /* performance counter i/f */
+	struct perf_event *cycle_event; /* PMC: cycles */
+	struct perf_event *instr_event; /* PMC: retired instructions */
 
 	struct task_struct *throttle_thread;  /* forced throttle idle thread */
 	wait_queue_head_t throttle_evt; /* throttle wait queue */
@@ -172,6 +165,8 @@ static struct dentry *memguard_dir;
 
 static int g_test = 0;
 
+extern int bwlock_mode;
+
 /* copied from kernel/sched/sched.h */
 static const int prio_to_weight[40] = {
  /* -20 */     88761,     71755,     56483,     46273,     36291,
@@ -193,6 +188,7 @@ static int sysctl_throttle_bw_mb = 100;
  **************************************************************************/
 extern int idle_cpu(int cpu);
 extern int nr_bwlocked_cores(void);
+extern void register_get_cpi(int (*func_ptr)(void));
 
 /**************************************************************************
  * Local Function Prototypes
@@ -235,22 +231,6 @@ MODULE_PARM_DESC(g_budget_max_bw, "maximum memory bandwidth (MB/s)");
 /**************************************************************************
  * Module main code
  **************************************************************************/
-
-static int mg_nr_bwlocked_cores(void)
-{
-	struct memguard_info *global = &memguard_info;
-	int i;
-	int nr = nr_bwlocked_cores(); /* check running tasks */
-	for_each_cpu(i, global->throttle_mask) {
-		struct task_struct *t = 
-			per_cpu_ptr(core_info, i)->throttled_task;
-		if (t && t->bwlock_val > 0)
-			nr += t->bwlock_val;
-	}
-	return nr;
-}
-
-
 /* similar to on_each_cpu_mask(), but this must be called with IRQ disabled */
 static void memguard_on_each_cpu_mask(const struct cpumask *mask, 
 				      smp_call_func_t func,
@@ -326,6 +306,54 @@ static void print_core_info(int cpu, struct core_info *cinfo)
 	pr_info("CPU%d: budget: %d, cur_budget: %d, period: %ld\n", 
 	       cpu, cinfo->budget, cinfo->cur_budget, cinfo->period_cnt);
 }
+
+#if USE_RCFS
+/* return cpi value of the calling core */
+static int get_cpi(void)
+{
+	struct core_info *cinfo = this_cpu_ptr(core_info);
+	u64 old_val, new_val;
+	u64 delta_cycles, delta_instrs;
+	int wcpi;
+
+	BUG_ON(!cinfo->cycle_event);
+	BUG_ON(!cinfo->instr_event);
+
+	old_val = local64_read(&cinfo->cycle_event->count);
+	cinfo->cycle_event->pmu->stop(cinfo->cycle_event, PERF_EF_UPDATE);
+	new_val = local64_read(&cinfo->cycle_event->count);
+	delta_cycles = new_val - old_val;
+
+	old_val = local64_read(&cinfo->instr_event->count);
+	cinfo->instr_event->pmu->stop(cinfo->instr_event, PERF_EF_UPDATE);
+	new_val = local64_read(&cinfo->instr_event->count);
+	delta_instrs = new_val - old_val;
+	wcpi = (int)div64_u64(delta_cycles * 1024, delta_instrs + 1);
+
+	cinfo->cycle_event->pmu->start(cinfo->cycle_event, 0);
+	cinfo->cycle_event->pmu->start(cinfo->instr_event, 0);
+	
+	DEBUG_RCFS(trace_printk("d_cycle: %lld d_instr: %lld wcpi: %d\n",
+				delta_cycles, delta_instrs, wcpi));
+
+	return wcpi;
+}
+#endif
+
+static int mg_nr_bwlocked_cores(void)
+{
+	struct memguard_info *global = &memguard_info;
+	int i;
+	int nr = nr_bwlocked_cores(); /* check running tasks */
+	for_each_cpu(i, global->throttle_mask) {
+		struct task_struct *t = (struct task_struct *)
+			per_cpu_ptr(core_info, i)->throttled_task;
+		if (t && t->bwlock_val > 0)
+			nr += t->bwlock_val;
+	}
+	return nr;
+}
+
 
 /**
  * update per-core usage statistics
@@ -789,9 +817,6 @@ static void period_timer_callback_slave(void *info)
 	/* budget can't be zero? */
 	cinfo->budget = max(cinfo->budget, 1);
 
-	/* initialize bwlock count */
-	cinfo->bwlock_cnt = 0;
-
 	if (cinfo->event->hw.sample_period != cinfo->budget) {
 		/* new budget is assigned */
 		DEBUG(trace_printk("MSG: new budget %d is assigned\n", 
@@ -876,6 +901,52 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	return HRTIMER_RESTART;
 }
 
+static struct perf_event *init_counting_counter(int cpu, int id)
+{
+	struct perf_event *event = NULL;
+	struct perf_event_attr sched_perf_hw_attr = {
+		/* use generalized hardware abstraction */
+		.type           = PERF_TYPE_HARDWARE,
+		.config         = id,
+		.size		= sizeof(struct perf_event_attr),
+		.pinned		= 1,
+		.disabled	= 1,
+		.exclude_kernel = 1,   /* TODO: 1 mean, no kernel mode counting */
+		.pinned = 1,
+	};
+
+	/* Try to register using hardware perf events */
+	event = perf_event_create_kernel_counter(
+		&sched_perf_hw_attr,
+		cpu, NULL,
+		NULL
+#if LINUX_VERSION_CODE > KERNEL_VERSION(3, 2, 0)
+		,NULL
+#endif
+		);
+
+	if (!event)
+		return NULL;
+
+	if (IS_ERR(event)) {
+		/* vary the KERN level based on the returned errno */
+		if (PTR_ERR(event) == -EOPNOTSUPP)
+			pr_info("cpu%d. not supported\n", cpu);
+		else if (PTR_ERR(event) == -ENOENT)
+			pr_info("cpu%d. not h/w event\n", cpu);
+		else
+			pr_err("cpu%d. unable to create perf event: %ld\n",
+			       cpu, PTR_ERR(event));
+		return NULL;
+	}
+
+	/* success path */
+	pr_info("cpu%d enabled counter type %d.\n", cpu, (int)id);
+
+	smp_wmb();
+
+	return event;
+}
 
 static struct perf_event *init_counter(int cpu, int budget)
 {
@@ -957,6 +1028,12 @@ static void __disable_counter(void *info)
 	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
 	cinfo->event->pmu->del(cinfo->event, 0);
 
+	cinfo->cycle_event->pmu->stop(cinfo->cycle_event, PERF_EF_UPDATE);
+	cinfo->cycle_event->pmu->del(cinfo->cycle_event, 0);
+
+	cinfo->instr_event->pmu->stop(cinfo->instr_event, PERF_EF_UPDATE);
+	cinfo->instr_event->pmu->del(cinfo->instr_event, 0);
+
 	pr_info("LLC bandwidth throttling disabled\n");
 }
 
@@ -970,6 +1047,8 @@ static void __start_counter(void* info)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
 	cinfo->event->pmu->add(cinfo->event, PERF_EF_START);
+	cinfo->cycle_event->pmu->add(cinfo->cycle_event, PERF_EF_START);
+	cinfo->instr_event->pmu->add(cinfo->instr_event, PERF_EF_START);
 }
 
 static void start_counters(void)
@@ -1004,6 +1083,8 @@ static ssize_t memguard_control_write(struct file *filp,
 		sscanf(p+8, "%d", &g_use_reclaim);
 	else if (!strncmp(p, "exclusive ", 10))
 		sscanf(p+10, "%d", &g_use_exclusive);
+	else if (!strncmp(p, "bwlockmode ", 11))
+		sscanf(p+11, "%d", &bwlock_mode);
 	else
 		pr_info("ERROR: %s\n", p);
 	smp_mb();
@@ -1023,6 +1104,7 @@ static int memguard_control_show(struct seq_file *m, void *v)
 	seq_printf(m, "active: %s\n", buf);
 	cpulist_scnprintf(buf, 64, global->throttle_mask);
 	seq_printf(m, "throttle: %s\n", buf);
+	seq_printf(m, "bwlockmode: %s\n", bwlock_mode ? "exclusive" : "shared");
 	return 0;
 }
 
@@ -1281,13 +1363,7 @@ static void __reset_stats(void *info)
 	cinfo->overall.throttled_time_ns = 0;
 	cinfo->overall.throttled = 0;
 	cinfo->overall.throttled_error = 0;
-#if USE_BWLOCK_TIMING
-	cinfo->overall.bwlock_time_ns = 0;
-	cinfo->overall.bwlock_cnt = 0;
-	cinfo->bwlock_time = ktime_set(0,0);
-	memset(cinfo->overall.bwlock_time_dist_us, 0, sizeof(int)*10);
-	memset(cinfo->overall.bwlock_time_dist_ms, 0, sizeof(int)*11);
-#endif
+
 	memset(cinfo->overall.throttled_error_dist, 0, sizeof(int)*10);
 	cinfo->throttled_time = ktime_set(0,0);
 	smp_mb();
@@ -1371,59 +1447,6 @@ static const struct file_operations memguard_failcnt_fops = {
 	.release	= single_release,
 };
 
-#if USE_BWLOCK_TIMING
-static int memguard_bwlockcnt_show(struct seq_file *m, void *v)
-{
-	int i;
-	smp_mb();
-	/* total #of throttled periods */
-	seq_printf(m, "%25s", "bwlocked_cnt: ");
-	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		seq_printf(m, "%8lld ", cinfo->overall.bwlock_cnt);
-	}
-	seq_printf(m, "\n%25s", "bwlocked_avg_time(ns): ");
-	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		seq_printf(m, "%8lld ", cinfo->overall.bwlock_time_ns/(cinfo->overall.bwlock_cnt+1));
-	}
-	seq_printf(m, "\ncore-pct   100   200   300   400   500   600   700   800   900   1000 (us)\n");
-	seq_printf(m, "--------------------------------------------------------------------");
-	for_each_online_cpu(i) {
-		int idx;
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		seq_printf(m, "\n%4d    ", i);
-		for (idx = 0; idx < 10; idx++)
-			seq_printf(m, "%5d ",
-				cinfo->overall.bwlock_time_dist_us[idx]);
-	}
-
-	seq_printf(m, "\ncore-pct   1     2     3     4     5     6     7     8     9     10 (ms)\n");
-	seq_printf(m, "--------------------------------------------------------------------");
-	for_each_online_cpu(i) {
-		int idx;
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		seq_printf(m, "\n%4d    ", i);
-		for (idx = 0; idx < 10; idx++)
-			seq_printf(m, "%5d ",
-				cinfo->overall.bwlock_time_dist_ms[idx]);
-	}
-	seq_printf(m, "\n");
-	return 0;
-}
-
-static int memguard_bwlockcnt_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, memguard_bwlockcnt_show, NULL);
-}
-
-static const struct file_operations memguard_bwlockcnt_fops = {
-	.open		= memguard_bwlockcnt_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-#endif
 
 static int memguard_init_debugfs(void)
 {
@@ -1444,11 +1467,6 @@ static int memguard_init_debugfs(void)
 
 	debugfs_create_file("failcnt", 0644, memguard_dir, NULL,
 			    &memguard_failcnt_fops);
-#if USE_BWLOCK_TIMING
-	debugfs_create_file("bwlockcnt", 0644, memguard_dir, NULL,
-			    &memguard_bwlockcnt_fops);
-#endif
-
 	return 0;
 }
 
@@ -1583,6 +1601,16 @@ int init_module( void )
 		/* initialize budget */
 		cinfo->budget = cinfo->limit = cinfo->event->hw.sample_period;
 
+
+		/* create cpi events */
+		cinfo->cycle_event = init_counting_counter(i, PERF_COUNT_HW_CPU_CYCLES);
+		if (!cinfo->cycle_event)
+			break;
+
+		cinfo->instr_event = init_counting_counter(i, PERF_COUNT_HW_INSTRUCTIONS);
+		if (!cinfo->instr_event)
+			break;
+
 		/* throttled task pointer */
 		cinfo->throttled_task = NULL;
 
@@ -1629,6 +1657,11 @@ int init_module( void )
 		      HRTIMER_MODE_REL_PINNED);
 	put_cpu();
 
+#if USE_RCFS
+	/* register cpi function */
+	register_get_cpi(&get_cpi);
+#endif
+
 	idle_notifier_register(&memguard_idle_nb);
 	return 0;
 }
@@ -1639,6 +1672,10 @@ void cleanup_module( void )
 
 	struct memguard_info *global = &memguard_info;
 
+#if USE_RCFS
+	/* unregister cpi function */
+	register_get_cpi(NULL);
+#endif
 	smp_mb();
 
 	get_online_cpus();
@@ -1658,7 +1695,10 @@ void cleanup_module( void )
 		pr_info("Stopping kthrottle/%d\n", i);
 		cinfo->throttled_task = NULL;
 		kthread_stop(cinfo->throttle_thread);
-		perf_event_release_kernel(cinfo->event);
+		perf_event_release_kernel(cinfo->event); 
+		perf_event_release_kernel(cinfo->cycle_event);
+		perf_event_release_kernel(cinfo->instr_event);
+		cinfo->event = cinfo->cycle_event = cinfo->instr_event = NULL;
 	}
 
 	/* unregister callbacks */
