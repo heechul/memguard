@@ -962,10 +962,8 @@ static int memguard_control_show(struct seq_file *m, void *v)
 	seq_printf(m, "reclaim: %d\n", g_use_reclaim);
 	seq_printf(m, "exclusive: %d\n", g_use_exclusive);
 	seq_printf(m, "taskprio: %d\n", g_use_task_priority);
-	cpulist_scnprintf(buf, 64, global->active_mask);
-	seq_printf(m, "active: %s\n", buf);
-	cpulist_scnprintf(buf, 64, global->throttle_mask);
-	seq_printf(m, "throttle: %s\n", buf);
+	seq_printf(m, "active: %*pbl\n", cpumask_pr_args(global->active_mask));
+	seq_printf(m, "throttle: %*pbl\n", cpumask_pr_args(global->throttle_mask));	
 	return 0;
 }
 
