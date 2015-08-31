@@ -50,7 +50,7 @@
 /**************************************************************************
  * Public Definitions
  **************************************************************************/
-#define MAX_NCPUS 32
+#define MAX_NCPUS 64
 #define CACHE_LINE_SIZE 64
 
 #if USE_DEBUG
@@ -1663,8 +1663,12 @@ int init_module( void )
 	get_online_cpus();
 	for_each_online_cpu(i) {
 		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-
 		int budget, mb;
+
+		if (i >= MAX_NCPUS) {
+			printk(KERN_INFO "too many cores. up to %d is supported\n", MAX_NCPUS);
+			return -ENODEV;
+		}
 		/* initialize counter h/w & event structure */
 		if (g_budget_pct[i] == 0) /* uninitialized. assign max value */
 			g_budget_pct[i] = 100 / num_online_cpus();
