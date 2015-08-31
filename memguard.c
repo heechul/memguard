@@ -171,7 +171,7 @@ static struct core_info __percpu *core_info;
 static char *g_hw_type = "";
 static int g_period_us = 1000;
 static int g_use_reclaim = 0; /* minimum remaining time to reclaim */
-static int g_use_bwlock = 1;
+static int g_use_bwlock = 0;
 static int g_use_exclusive = 0;
 static int g_use_task_priority = 0;
 static int g_budget_pct[MAX_NCPUS];
@@ -182,8 +182,6 @@ static int g_budget_max_bw = 1200; /* MB/s. best=6000 MB/s, worst=1200 MB/s */
 static struct dentry *memguard_dir;
 
 static int g_test = 0;
-
-extern int bwlock_mode;
 
 /* copied from kernel/sched/sched.h */
 static const int prio_to_weight[40] = {
@@ -580,7 +578,7 @@ static void __newperiod(void *info)
 		spin_unlock(&global->lock);
 }
 
-#ifdef USE_BWLOCK_DYNPRIO
+#if USE_BWLOCK_DYNPRIO
 static void set_load_weight(struct task_struct *p)
 {
 	int prio = p->static_prio - MAX_RT_PRIO;
@@ -735,9 +733,8 @@ static void memguard_process_overflow(struct irq_work *entry)
 	cinfo->throttled_task = current;
 	cinfo->throttled_time = start;
 
-#ifdef USE_BWLOCK_DYNPRIO
+#if USE_BWLOCK_DYNPRIO
 	/* dynamically lower the throttled task's priority */
-	// TBD: register the 'current' task
 	for (i = 0; i < cinfo->dprio_cnt; i++) {
 		if (cinfo->dprio[i].task == current)
 			break;
@@ -1167,8 +1164,6 @@ static ssize_t memguard_control_write(struct file *filp,
 		sscanf(p+8, "%d", &g_use_reclaim);
 	else if (!strncmp(p, "exclusive ", 10))
 		sscanf(p+10, "%d", &g_use_exclusive);
-	else if (!strncmp(p, "bwlockmode ", 11))
-		sscanf(p+11, "%d", &bwlock_mode);
 	else
 		pr_info("ERROR: %s\n", p);
 	smp_mb();
@@ -1188,7 +1183,6 @@ static int memguard_control_show(struct seq_file *m, void *v)
 	seq_printf(m, "active: %s\n", buf);
 	cpulist_scnprintf(buf, 64, global->throttle_mask);
 	seq_printf(m, "throttle: %s\n", buf);
-	seq_printf(m, "bwlockmode: %s\n", bwlock_mode ? "exclusive" : "shared");
 	return 0;
 }
 
