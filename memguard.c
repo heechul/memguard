@@ -14,7 +14,8 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define USE_DEBUG  1
-#define USE_RCFS   1
+#define USE_RCFS   0
+#define USE_BWLOCK_DYNPRIO 0
 
 /**************************************************************************
  * Included Files
@@ -44,6 +45,7 @@
 #endif
 #include <linux/cpu.h>
 #include <asm/idle.h>
+#include <linux/sched.h>
 
 /**************************************************************************
  * Public Definitions
@@ -70,8 +72,6 @@
 #define BUF_SIZE 256
 #define PREDICTOR 1  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
 
-#define BWLOCK_THRESH 200
-
 /**************************************************************************
  * Public Types
  **************************************************************************/
@@ -87,6 +87,19 @@ struct memstat{
 	u64 exclusive_bw;        /* exclusive mode used bandwidth */
 };
 
+#if USE_BWLOCK_DYNPRIO
+
+#define MAX_DYNPRIO_TSKS 20
+#define NICE_TO_PRIO(nice)	(MAX_RT_PRIO + (nice) + 20)
+#define PRIO_TO_NICE(prio)	((prio) - MAX_RT_PRIO - 20)
+
+struct dynprio {
+	struct task_struct *task;
+	int origprio;
+	ktime_t start;
+};
+#endif
+
 /* percpu info */
 struct core_info {
 	/* user configurations */
@@ -95,11 +108,15 @@ struct core_info {
 	int limit;               /* limit mode (exclusive to weight)*/
 	int weight;              /* weight mode (exclusive to limit)*/
 	int wsum;                /* local copy of global->wsum */
-
+#if USE_BWLOCK_DYNPRIO
+	struct dynprio dprio[100];
+	int dprio_cnt;
+#endif
 	/* for control logic */
 	int cur_budget;          /* currently available budget */
 
-	volatile struct task_struct * throttled_task;
+	struct task_struct * throttled_task;
+	
 	ktime_t throttled_time;  /* absolute time when throttled */
 
 	u64 old_val;             /* hold previous counter value */
@@ -130,6 +147,7 @@ struct core_info {
 struct memguard_info {
 	int master;
 	ktime_t period_in_ktime;
+	ktime_t cur_period_start;
 	int start_tick;
 	int budget;              /* reclaimed budget */
 	long period_cnt;
@@ -179,8 +197,19 @@ static const int prio_to_weight[40] = {
  /*  15 */        36,        29,        23,        18,        15,
 };
 
+static const u32 prio_to_wmult[40] = {
+ /* -20 */     48388,     59856,     76040,     92818,    118348,
+ /* -15 */    147320,    184698,    229616,    287308,    360437,
+ /* -10 */    449829,    563644,    704093,    875809,   1099582,
+ /*  -5 */   1376151,   1717300,   2157191,   2708050,   3363326,
+ /*   0 */   4194304,   5237765,   6557202,   8165337,  10153587,
+ /*   5 */  12820798,  15790321,  19976592,  24970740,  31350126,
+ /*  10 */  39045157,  49367440,  61356676,  76695844,  95443717,
+ /*  15 */ 119304647, 148102320, 186737708, 238609294, 286331153,
+};
+
 /* should be defined in the scheduler code */
-static int sysctl_maxperf_bw_mb = 10000;
+static int sysctl_maxperf_bw_mb = 100000;
 static int sysctl_throttle_bw_mb = 100;
 
 /**************************************************************************
@@ -551,6 +580,29 @@ static void __newperiod(void *info)
 		spin_unlock(&global->lock);
 }
 
+#ifdef USE_BWLOCK_DYNPRIO
+static void set_load_weight(struct task_struct *p)
+{
+	int prio = p->static_prio - MAX_RT_PRIO;
+	struct load_weight *load = &p->se.load;
+	load->weight = prio_to_weight[prio];
+	load->inv_weight = prio_to_wmult[prio];
+}
+
+void intr_set_user_nice(struct task_struct *p, long nice)
+{
+	if (task_nice(p) == nice || nice < -20 || nice > 19)
+		return;
+
+	if (p->policy != SCHED_NORMAL)
+		return;
+
+	p->static_prio = NICE_TO_PRIO(nice);
+	set_load_weight(p);
+	p->prio = p->static_prio;
+}
+#endif
+
 /**
  * memory overflow handler.
  * must not be executed in NMI context. but in hard irq context
@@ -559,10 +611,13 @@ static void memguard_process_overflow(struct irq_work *entry)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
 	struct memguard_info *global = &memguard_info;
-
+	int i, n;
 	int amount = 0;
-	ktime_t start = ktime_get();
+	ktime_t start, dur;
 	s64 budget_used;
+
+	start = ktime_get();
+
 	BUG_ON(in_nmi() || !in_irq());
 	WARN_ON_ONCE(cinfo->budget > global->max_budget);
 
@@ -680,6 +735,25 @@ static void memguard_process_overflow(struct irq_work *entry)
 	cinfo->throttled_task = current;
 	cinfo->throttled_time = start;
 
+#ifdef USE_BWLOCK_DYNPRIO
+	/* dynamically lower the throttled task's priority */
+	// TBD: register the 'current' task
+	for (i = 0; i < cinfo->dprio_cnt; i++) {
+		if (cinfo->dprio[i].task == current)
+			break;
+	}
+	if (i == cinfo->dprio_cnt && i < MAX_DYNPRIO_TSKS) {
+		cinfo->dprio[i].task = current;
+		cinfo->dprio[i].start = start;
+		cinfo->dprio[i].origprio = task_nice(current);
+		cinfo->dprio_cnt++;
+	}
+
+	dur = ktime_sub(start, global->cur_period_start);
+	n = 19 - 20 * (dur.tv64/1000) / g_period_us;
+	DEBUG_BWLOCK(trace_printk("dynprio %6s %d\n", current->comm, n));
+	intr_set_user_nice(current, n);
+#endif
 	WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
 	smp_mb();
 	wake_up_interruptible(&cinfo->throttle_evt);
@@ -707,6 +781,7 @@ static void period_timer_callback_slave(void *info)
 	struct task_struct *target;
 	long new_period = (long)info;
 	int cpu = smp_processor_id();
+	int i;
 
 	/* must be irq disabled. hard irq */
 	BUG_ON(!irqs_disabled());
@@ -761,8 +836,17 @@ static void period_timer_callback_slave(void *info)
 				cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
 			else
 				cinfo->limit = convert_mb_to_events(sysctl_throttle_bw_mb);
-		} else
+		} else {
 			cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
+#if USE_BWLOCK_DYNPRIO
+			/* TBD: if there was deprioritized tasks, restore their priorities */
+			for (i = 0; i < cinfo->dprio_cnt; i++) {
+				int oprio = cinfo->dprio[i].origprio;
+				intr_set_user_nice(cinfo->dprio[i].task, oprio);
+			}
+			cinfo->dprio_cnt = 0;
+#endif
+		}
 	}
 
 	DEBUG_BWLOCK(trace_printk("%s|bwlock_val %d|g->bwlocked_cores %d\n", 
@@ -872,7 +956,7 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	cpumask_var_t active_mask;
 
 	now = timer->base->get_time();
-
+	global->cur_period_start = now;
         DEBUG(trace_printk("master begin\n"));
 	BUG_ON(smp_processor_id() != global->master);
 
@@ -1205,7 +1289,7 @@ static ssize_t memguard_limit_write(struct file *filp,
 
 static int memguard_limit_show(struct seq_file *m, void *v)
 {
-	int i, cpu;
+	int i, j, cpu;
 	int wsum = 0;
 	struct memguard_info *global = &memguard_info;
 	cpu = get_cpu();
@@ -1232,6 +1316,12 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 			   i, budget,
 			   convert_events_to_mb(budget),
 			   pct, cinfo->weight);
+#if USE_BWLOCK_DYNPRIO
+		for (j = 0; j < cinfo->dprio_cnt; j++) {
+			seq_printf(m, "\t%12s  %3d\n", (cinfo->dprio[j].task)->comm, 
+				   cinfo->dprio[j].origprio);
+		}
+#endif
 	}
 	seq_printf(m, "g_budget_max_bw: %d MB/s, (%d)\n", g_budget_max_bw,
 		global->max_budget);
@@ -1446,7 +1536,6 @@ static const struct file_operations memguard_failcnt_fops = {
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
-
 
 static int memguard_init_debugfs(void)
 {
