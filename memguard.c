@@ -15,6 +15,7 @@
 
 #define USE_DEBUG  1
 #define USE_RCFS   0
+#define USE_BWLOCK 0
 #define USE_BWLOCK_DYNPRIO 0
 
 /**************************************************************************
@@ -157,7 +158,9 @@ struct memguard_info {
 	cpumask_var_t throttle_mask;
 	cpumask_var_t active_mask;
 	atomic_t wsum;
+#if USE_BWLOCK
 	int bwlocked_cores;
+#endif
 	struct hrtimer hr_timer;
 };
 
@@ -214,7 +217,9 @@ static int sysctl_throttle_bw_mb = 100;
  * External Function Prototypes
  **************************************************************************/
 extern int idle_cpu(int cpu);
+#if USE_BWLOCK
 extern int nr_bwlocked_cores(void);
+#endif
 extern void register_get_cpi(int (*func_ptr)(void));
 
 /**************************************************************************
@@ -367,6 +372,7 @@ static int get_cpi(void)
 }
 #endif
 
+#if USE_BWLOCK
 static int mg_nr_bwlocked_cores(void)
 {
 	struct memguard_info *global = &memguard_info;
@@ -380,7 +386,7 @@ static int mg_nr_bwlocked_cores(void)
 	}
 	return nr;
 }
-
+#endif
 
 /**
  * update per-core usage statistics
@@ -826,6 +832,7 @@ static void period_timer_callback_slave(void *info)
 		target = current;
 	cinfo->throttled_task = NULL;
 
+#if USE_BWLOCK
 	/* bwlock check */
 	if (g_use_bwlock) {
 		if (global->bwlocked_cores > 0) {
@@ -845,10 +852,11 @@ static void period_timer_callback_slave(void *info)
 #endif
 		}
 	}
-
 	DEBUG_BWLOCK(trace_printk("%s|bwlock_val %d|g->bwlocked_cores %d\n", 
 				  (current)?current->comm:"null", 
 				  current->bwlock_val, global->bwlocked_cores));
+#endif
+
 	DEBUG(trace_printk("%p|New period %ld. global->budget=%d\n",
 			   cinfo->throttled_task,
 			   cinfo->period_cnt, global->budget));
@@ -870,30 +878,33 @@ static void period_timer_callback_slave(void *info)
 
 	if (cinfo->weight > 0) {
 		/* weight mode */
-		int wsum = 0; int i;
+		int wsum = 0;
 		smp_mb();
 		for_each_cpu(i, global->active_mask)
 			wsum += per_cpu_ptr(core_info, i)->weight;
 		cinfo->budget = 
 			div64_u64((u64)global->max_budget*cinfo->weight, wsum);
-		DEBUG(trace_printk("WGT: budget:%d/%d weight:%d/%d\n",
-				   cinfo->budget, global->max_budget,
-				   cinfo->weight, wsum));
 	} else if (cinfo->limit > 0) {
 		/* limit mode */
 		cinfo->budget = cinfo->limit;
-	} else {
+	} 
+	spin_unlock(&global->lock);
+
+#if 0
+	if (cinfo->weight > 0) {
+		DEBUG(trace_printk("WGT: budget:%d/%d weight:%d/%d\n",
+				   cinfo->budget, global->max_budget,
+				   cinfo->weight, wsum));
+	}
+	if (cinfo->budget > global->max_budget) {
+		trace_printk("ERR: c->budget(%d) > g->max_budget(%d)\n",
+		     cinfo->budget, global->max_budget);
+	}
+	if (cinfo->budget == 0) {
 		WARN_ON_ONCE(1);
 		trace_printk("ERR: both limit and weight = 0");
 	}
-
-#if 0
-	if (cinfo->budget > global->max_budget)
-		trace_printk("ERR: c->budget(%d) > g->max_budget(%d)\n",
-		     cinfo->budget, global->max_budget);
 #endif
-
-	spin_unlock(&global->lock);
 
 	/* budget can't be zero? */
 	cinfo->budget = max(cinfo->budget, 1);
@@ -972,9 +983,9 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	if (orun > 1)
 		trace_printk("ERR: timer overrun %d at period %ld\n",
 			    orun, new_period);
-
+#if USE_BWLOCK
 	global->bwlocked_cores = mg_nr_bwlocked_cores();
-
+#endif
 	memguard_on_each_cpu_mask(active_mask,
 		period_timer_callback_slave, (void *)new_period, 0);
 
@@ -1319,7 +1330,9 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 	}
 	seq_printf(m, "g_budget_max_bw: %d MB/s, (%d)\n", g_budget_max_bw,
 		global->max_budget);
+#if USE_BWLOCK
 	seq_printf(m, "bwlocked_core: %d\n", global->bwlocked_cores);
+#endif
 
 	put_cpu();
 	return 0;
@@ -1468,8 +1481,6 @@ static ssize_t memguard_failcnt_write(struct file *filp,
 	global->budget = global->period_cnt = 0;
 	global->start_tick = jiffies;
 	spin_unlock(&global->lock);
-
-	smp_mb();
 	on_each_cpu(__reset_stats, NULL, 0);
 	return cnt;
 }
@@ -1601,11 +1612,13 @@ static int memguard_idle_notifier(struct notifier_block *nb, unsigned long val,
 	spin_lock_irqsave(&global->lock, flags);
 	if (val == IDLE_START) {
 		cpumask_clear_cpu(smp_processor_id(), global->active_mask);
-		DEBUG(if (cpumask_equal(global->throttle_mask, global->active_mask))
-			      trace_printk("DBG: last idle\n"););
 	} else
 		cpumask_set_cpu(smp_processor_id(), global->active_mask);
 	spin_unlock_irqrestore(&global->lock, flags);
+
+	DEBUG(if (cpumask_equal(global->throttle_mask, global->active_mask))
+			  trace_printk("DBG: last idle\n"););
+
 	return 0;
 }
 
