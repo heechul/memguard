@@ -556,7 +556,6 @@ static void __unthrottle_core(void *info)
 		cinfo->exclusive_time = ktime_get();
 
 		cinfo->throttled_task = NULL;
-		smp_wmb();
 		DEBUG_RECLAIM(trace_printk("exclusive mode begin\n"));
 	}
 }
@@ -680,9 +679,7 @@ static void memguard_process_overflow(struct irq_work *entry)
 			return;
 		} else if (g_use_exclusive == 2) {
 			/* algorithm 2: wakeup all (i.e., non regulation) */
-			smp_call_function(__unthrottle_core, NULL, 0);
-			cinfo->exclusive_mode = 1;
-			cinfo->exclusive_time = ktime_get();
+			memguard_on_each_cpu_mask(global->active_mask, __unthrottle_core, NULL, 0);
 			DEBUG_RECLAIM(trace_printk("exclusive mode begin\n"));
 			return;
 		} else if (g_use_exclusive == 3 || g_use_exclusive == 4) {
