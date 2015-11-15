@@ -124,8 +124,6 @@ struct core_info {
 	int prev_throttle_error; /* check whether there was throttle error in 
 				    the previous period */
 
-	u64 exclusive_vtime;     /* exclusive mode vtime for scheduling */
-
 	int exclusive_mode;      /* 1 - if in exclusive mode */
 	ktime_t exclusive_time;  /* time when exclusive mode begins */
 
@@ -396,7 +394,6 @@ void update_statistics(struct core_info *cinfo)
 	/* counter must be stopped by now. */
 	s64 new;
 	int used;
-	u64 exclusive_vtime = 0;
 
 	new = perf_event_count(cinfo->event);
 	used = (int)(new - cinfo->old_val); 
@@ -446,23 +443,6 @@ void update_statistics(struct core_info *cinfo)
 		
 		/* used bw */
 		exclusive_bw = (cinfo->used[0] - cinfo->budget);
-
-		if (g_use_exclusive == 3)
-			exclusive_vtime = exclusive_ns;
-		else if (g_use_exclusive == 4)
-			exclusive_vtime = exclusive_bw;
-		else
-			exclusive_vtime = 0;
-
-		if (cinfo->weight > 0) {
-			/* weighted vtime (used by scheduler on throttle) */
-			for_each_cpu(i, global->active_mask)
-				wsum += per_cpu_ptr(core_info, i)->weight;
-			cinfo->exclusive_vtime += 
-				div64_u64((u64)exclusive_vtime * wsum, 
-					  cinfo->weight);
-		} else
-			cinfo->exclusive_vtime += exclusive_vtime;
 
 		cinfo->overall.exclusive_ns += exclusive_ns;
 		cinfo->overall.exclusive_bw += exclusive_bw;
@@ -624,19 +604,6 @@ static void memguard_process_overflow(struct irq_work *entry)
 	BUG_ON(in_nmi() || !in_irq());
 	WARN_ON_ONCE(cinfo->budget > global->max_budget);
 
-	spin_lock(&global->lock);
-	if (!cpumask_test_cpu(smp_processor_id(), global->active_mask)) {
-		spin_unlock(&global->lock);
-		trace_printk("ERR: not active\n");
-		return;
-	} else if (global->period_cnt != cinfo->period_cnt) {
-		trace_printk("ERR: global(%ld) != local(%ld) period mismatch\n",
-			     global->period_cnt, cinfo->period_cnt);
-		spin_unlock(&global->lock);
-		return;
-	}
-	spin_unlock(&global->lock);
-
 	budget_used = memguard_event_used(cinfo);
 
 	/* erroneous overflow, that could have happend before period timer
@@ -665,8 +632,19 @@ static void memguard_process_overflow(struct irq_work *entry)
 		cinfo->prev_throttle_error = 1;
 	}
 
-	/* we are going to be throttled */
 	spin_lock(&global->lock);
+	if (!cpumask_test_cpu(smp_processor_id(), global->active_mask)) {
+		spin_unlock(&global->lock);
+		trace_printk("ERR: not active\n");
+		return;
+	} else if (global->period_cnt != cinfo->period_cnt) {
+		trace_printk("ERR: global(%ld) != local(%ld) period mismatch\n",
+			     global->period_cnt, cinfo->period_cnt);
+		spin_unlock(&global->lock);
+		return;
+	}
+
+	/* we are going to be throttled */
 	cpumask_set_cpu(smp_processor_id(), global->throttle_mask);
 	if (cpumask_equal(global->throttle_mask, global->active_mask)) {
 		/* all other cores are alreay throttled */
@@ -679,34 +657,12 @@ static void memguard_process_overflow(struct irq_work *entry)
 			return;
 		} else if (g_use_exclusive == 2) {
 			/* algorithm 2: wakeup all (i.e., non regulation) */
-			memguard_on_each_cpu_mask(global->active_mask, __unthrottle_core, NULL, 0);
+			smp_call_function_many(global->throttle_mask, __unthrottle_core, NULL, 0); // FIXME: 
+			cinfo->exclusive_mode = 1;
+			cinfo->exclusive_time = ktime_get();
+			cinfo->throttled_task = NULL;
 			DEBUG_RECLAIM(trace_printk("exclusive mode begin\n"));
 			return;
-		} else if (g_use_exclusive == 3 || g_use_exclusive == 4) {
-			/* algorithm 3: CFS based on exclusive_vtime_ns */
-			int target_cpu = smp_processor_id(); /* wake up cpu */
-			u64 min_vtime = 0;
-			int i;
-			for_each_cpu(i, global->active_mask) {
-				u64 cur_vtime = per_cpu_ptr(core_info, i)
-					->exclusive_vtime;
-				if (min_vtime == 0 || cur_vtime < min_vtime) {
-					min_vtime = cur_vtime;
-					target_cpu = i;
-				}
-			}
-			if (target_cpu == smp_processor_id()) {
-				cinfo->exclusive_mode = 1;
-				cinfo->exclusive_time = ktime_get();
-				DEBUG_RECLAIM(trace_printk("exclusive%d mode begin"
-							   "vtime: %lld\n", 
-							   cinfo->exclusive_mode,
-							   cinfo->exclusive_vtime));
-				return;
-			}
-			smp_call_function_single(
-				target_cpu, __unthrottle_core, NULL, 0);
-			/* i'll be throttled */
 		} else if (g_use_exclusive == 5) {
 			smp_call_function_single(global->master, __newperiod, 
 					  (void *)cinfo->period_cnt, 0);
@@ -798,22 +754,6 @@ static void period_timer_callback_slave(void *info)
 
 	/* stop counter */
 	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
-
-	if (cinfo->exclusive_vtime == 0 && 
-	    (g_use_exclusive == 3 || g_use_exclusive == 4))
-	{
-		/* set the minimum vtime */
-		u64 min_vtime = 0;
-		int i;
-		for_each_cpu(i, global->active_mask) {
-			u64 cur_vtime =
-				per_cpu_ptr(core_info, i)->exclusive_vtime;
-			if (min_vtime == 0 || cur_vtime < min_vtime)
-				min_vtime = cur_vtime;
-		}
-		cinfo->exclusive_vtime = min_vtime;
-	}
-	
 
 	/* I'm actively participating */
 	spin_lock(&global->lock);
