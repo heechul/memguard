@@ -1727,6 +1727,8 @@ void cleanup_module( void )
 	for_each_online_cpu(i) {
 		struct core_info *cinfo = per_cpu_ptr(core_info, i);
 		pr_info("Stopping kthrottle/%d\n", i);
+		cinfo->throttled_task = NULL;
+		kthread_stop(cinfo->throttle_thread);
 		perf_event_release_kernel(cinfo->event); 
 		cinfo->event = NULL; 
 #if USE_RCFS
