@@ -1030,14 +1030,6 @@ static struct perf_event *init_counter(int cpu, int budget)
 	return event;
 }
 
-static void __kill_throttlethread(void *info)
-{
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-	pr_info("Stopping kthrottle/%d\n", smp_processor_id());
-	cinfo->throttled_task = NULL;
-	smp_mb();
-}
-
 static void __disable_counter(void *info)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
@@ -1713,8 +1705,6 @@ void cleanup_module( void )
 	smp_mb();
 
 	get_online_cpus();
-
-	on_each_cpu(__kill_throttlethread, NULL, 1);
 
 	/* unregister sched-tick callback */
 	pr_info("Cancel timer\n");
