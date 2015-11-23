@@ -699,7 +699,6 @@ static void memguard_process_overflow(struct irq_work *entry)
 	intr_set_user_nice(current, n);
 #endif
 	WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
-	smp_mb();
 	wake_up_interruptible(&cinfo->throttle_evt);
 }
 
@@ -756,6 +755,7 @@ static void period_timer_callback_slave(void *info)
 	else
 		target = current;
 	cinfo->throttled_task = NULL;
+	smp_mb(); // IMPORTANT. 
 
 #if USE_BWLOCK
 	/* bwlock check */
@@ -804,7 +804,6 @@ static void period_timer_callback_slave(void *info)
 	if (cinfo->weight > 0) {
 		/* weight mode */
 		int wsum = 0;
-		smp_mb();
 		for_each_cpu(i, global->active_mask)
 			wsum += per_cpu_ptr(core_info, i)->weight;
 		cinfo->budget = 
@@ -1100,7 +1099,6 @@ static ssize_t memguard_control_write(struct file *filp,
 		sscanf(p+10, "%d", &g_use_exclusive);
 	else
 		pr_info("ERROR: %s\n", p);
-	smp_mb();
 	return cnt;
 }
 
@@ -1144,7 +1142,6 @@ static void __update_budget(void *info)
 	}
 	cinfo->limit = (unsigned long)info;
 	cinfo->weight = 0;
-	smp_mb();
 	DEBUG_USER(trace_printk("MSG: New budget of Core%d is %d\n",
 				smp_processor_id(), cinfo->budget));
 
@@ -1161,7 +1158,6 @@ static void __update_weight(void *info)
 
 	cinfo->weight = (unsigned long)info;
 	cinfo->limit = 0;
-	smp_mb();
 	DEBUG_USER(trace_printk("MSG: New weight of Core%d is %d\n",
 				smp_processor_id(), cinfo->weight));
 }
@@ -1210,8 +1206,6 @@ static ssize_t memguard_limit_write(struct file *filp,
 	}
 	global->max_budget = max_budget;
 	g_budget_max_bw = convert_events_to_mb(max_budget);
-
-	smp_mb();
 	return cnt;
 }
 
@@ -1222,7 +1216,6 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 	struct memguard_info *global = &memguard_info;
 	cpu = get_cpu();
 
-	smp_mb();
 	seq_printf(m, "cpu  |budget (MB/s,pct,weight)\n");
 	seq_printf(m, "-------------------------------\n");
 
@@ -1325,8 +1318,6 @@ static int memguard_usage_show(struct seq_file *m, void *v)
 {
 	int i, j;
 
-	smp_mb();
-
 	/* current utilization */
 	for (j = 0; j < 3; j++) {
 		for_each_online_cpu(i) {
@@ -1387,7 +1378,6 @@ static void __reset_stats(void *info)
 
 	memset(cinfo->overall.throttled_error_dist, 0, sizeof(int)*10);
 	cinfo->throttled_time = ktime_set(0,0);
-	smp_mb();
 
 	DEBUG_USER(trace_printk("MSG: Clear statistics of Core%d\n",
 				smp_processor_id()));
@@ -1413,7 +1403,6 @@ static int memguard_failcnt_show(struct seq_file *m, void *v)
 {
 	int i;
 
-	smp_mb();
 	/* total #of throttled periods */
 	seq_printf(m, "throttled: ");
 	for_each_online_cpu(i) {
@@ -1511,12 +1500,10 @@ static int throttle_thread(void *arg)
 		if (kthread_should_stop())
 			break;
 
-		smp_mb();
 		while (cinfo->throttled_task && !kthread_should_stop())
 		{
 			cpu_relax();
 			/* TODO: mwait */
-			smp_mb();
 		}
 	}
 
@@ -1661,7 +1648,6 @@ int init_module( void )
 		kthread_bind(cinfo->throttle_thread, i);
 		wake_up_process(cinfo->throttle_thread);
 	}
-	smp_mb();
 
 	register_hotcpu_notifier(&memguard_cpu_notifier);
 
@@ -1669,7 +1655,6 @@ int init_module( void )
 
 	pr_info("Start event counters\n");
 	start_counters();
-	smp_mb();
 
 	pr_info("Start period timer (period=%lld us)\n",
 		div64_u64(global->period_in_ktime.tv64, 1000));
@@ -1702,8 +1687,6 @@ void cleanup_module( void )
 	/* unregister cpi function */
 	register_get_cpi(NULL);
 #endif
-	smp_mb();
-
 	get_online_cpus();
 
 	/* unregister sched-tick callback */
@@ -1762,7 +1745,6 @@ enum hrtimer_restart test_timer_cb(struct hrtimer *timer)
 	on_each_cpu(test_ipi_cb, 0, 0);
 	trace_printk("master end\n");
 	g_test--;
-	smp_mb();
 	if (g_test == 0) 
 		return HRTIMER_NORESTART;
 	else
@@ -1779,7 +1761,6 @@ static int self_test(void)
 		      HRTIMER_MODE_REL_PINNED);
 
 	while (g_test) {
-		smp_mb();
 		cpu_relax();
 	}
 
