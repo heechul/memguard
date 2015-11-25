@@ -94,10 +94,7 @@ struct dynprio {
 struct core_info {
 	/* user configurations */
 	int budget;              /* assigned budget */
-
 	int limit;               /* limit mode (exclusive to weight)*/
-	int weight;              /* weight mode (exclusive to limit)*/
-	int wsum;                /* local copy of global->wsum */
 #if USE_BWLOCK_DYNPRIO
 	struct dynprio dprio[100];
 	int dprio_cnt;
@@ -137,11 +134,7 @@ struct memguard_info {
 	ktime_t period_in_ktime;
 	ktime_t cur_period_start;
 	int start_tick;
-	int budget;              /* reclaimed budget */
 	long period_cnt;
-	spinlock_t lock;
-	int max_budget;          /* \sum(cinfo->budget) */
-
 	cpumask_var_t throttle_mask;
 	cpumask_var_t active_mask;
 	atomic_t wsum;
@@ -160,14 +153,9 @@ static struct core_info __percpu *core_info;
 
 static char *g_hw_type = "";
 static int g_period_us = 1000;
-static int g_use_reclaim = 0; /* minimum remaining time to reclaim */
 static int g_use_bwlock = 0;
 static int g_use_exclusive = 0;
-static int g_use_task_priority = 0;
-static int g_budget_pct[MAX_NCPUS];
-static int g_budget_cnt = 4;
-static int g_budget_min_value = 1000;
-static int g_budget_max_bw = 1200; /* MB/s. best=6000 MB/s, worst=1200 MB/s */ 
+static int g_budget_mb[MAX_NCPUS];
 
 static struct dentry *memguard_dir;
 
@@ -215,7 +203,6 @@ extern void register_get_cpi(int (*func_ptr)(void));
  * Local Function Prototypes
  **************************************************************************/
 static int self_test(void);
-static void __reset_stats(void *info);
 static void period_timer_callback_slave(void *info);
 enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer);
 static void memguard_process_overflow(struct irq_work *entry);
@@ -234,20 +221,11 @@ MODULE_PARM_DESC(g_test, "number of test iterations");
 module_param(g_hw_type, charp,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_hw_type, "hardware type");
 
-module_param(g_use_reclaim, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(g_use_reclaim, "enable/disable reclaim");
-
 module_param(g_use_bwlock, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_use_bwlock, "enable/disable reclaim");
 
 module_param(g_period_us, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_period_us, "throttling period in usec");
-
-module_param_array(g_budget_pct, int, &g_budget_cnt, 0000);
-MODULE_PARM_DESC(g_budget_pct, "array of budget per cpu");
-
-module_param(g_budget_max_bw, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(g_budget_max_bw, "maximum memory bandwidth (MB/s)");
 
 /**************************************************************************
  * Module main code
@@ -462,56 +440,6 @@ static void event_overflow_callback(struct perf_event *event,
 	irq_work_queue(&cinfo->pending);
 }
 
-/* must be in hardirq context */
-static int donate_budget(long cur_period, int budget)
-{
-	struct memguard_info *global = &memguard_info;
-	spin_lock(&global->lock);
-	if (global->period_cnt == cur_period) {
-		global->budget += budget;
-	}
-	spin_unlock(&global->lock);
-	return global->budget;
-}
-
-/* must be in hardirq context */
-static int reclaim_budget(long cur_period, int budget)
-{
-	struct memguard_info *global = &memguard_info;
-	int reclaimed = 0;
-	spin_lock(&global->lock);
-	if (global->period_cnt == cur_period) {
-		reclaimed = min(budget, global->budget);
-		global->budget -= reclaimed;
-	}
-	spin_unlock(&global->lock);
-	return reclaimed;
-}
-
-/**
- * reclaim local budget from global budget pool
- */
-static int request_budget(struct core_info *cinfo)
-{
-	int amount = 0;
-	int budget_used = memguard_event_used(cinfo);
-
-	BUG_ON(!cinfo);
-
-	if (budget_used < cinfo->budget && current->policy == SCHED_NORMAL) {
-		/* didn't used up my original budget */
-		amount = cinfo->budget - budget_used;
-	} else {
-		/* I'm requesting more than I originall assigned */
-		amount = g_budget_min_value;
-	}
-
-	if (amount > 0) {
-		/* successfully reclaim my budget */
-		amount = reclaim_budget(cinfo->period_cnt, amount);
-	}
-	return amount;
-}
 
 /**
  * called by process_overflow
@@ -534,12 +462,9 @@ static void __newperiod(void *info)
 	ktime_t start = ktime_get();
 	struct memguard_info *global = &memguard_info;
 	
-	spin_lock(&global->lock);
 	if (period == global->period_cnt) {
 		ktime_t new_expire = ktime_add(start, global->period_in_ktime);
 		long new_period = ++global->period_cnt;
-		global->budget = 0;
-		spin_unlock(&global->lock);
 
 		/* arrived before timer interrupt is called */
 		hrtimer_start_range_ns(&global->hr_timer, new_expire,
@@ -547,8 +472,7 @@ static void __newperiod(void *info)
 		DEBUG(trace_printk("begin new period\n"));
 
 		on_each_cpu(period_timer_callback_slave, (void *)new_period, 0);
-	} else
-		spin_unlock(&global->lock);
+	} 
 }
 
 #if USE_BWLOCK_DYNPRIO
@@ -582,14 +506,12 @@ static void memguard_process_overflow(struct irq_work *entry)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
 	struct memguard_info *global = &memguard_info;
-	int amount = 0;
 	ktime_t start;
 	s64 budget_used;
 
 	start = ktime_get();
 
 	BUG_ON(in_nmi() || !in_irq());
-	WARN_ON_ONCE(cinfo->budget > global->max_budget);
 
 	budget_used = memguard_event_used(cinfo);
 
@@ -598,15 +520,6 @@ static void memguard_process_overflow(struct irq_work *entry)
 	if (budget_used < cinfo->cur_budget) {
 		trace_printk("ERR: overflow in timer. used %lld < cur_budget %d. ignore\n",
 			     budget_used, cinfo->cur_budget);
-		return;
-	}
-
-	/* try to reclaim budget from the global pool */
-	amount = request_budget(cinfo);
-	if (amount > 0) {
-		cinfo->cur_budget += amount;
-		local64_set(&cinfo->event->hw.period_left, amount);
-		DEBUG_RECLAIM(trace_printk("successfully reclaimed %d\n", amount));
 		return;
 	}
 
@@ -619,15 +532,12 @@ static void memguard_process_overflow(struct irq_work *entry)
 		cinfo->prev_throttle_error = 1;
 	}
 
-	spin_lock(&global->lock);
 	if (!cpumask_test_cpu(smp_processor_id(), global->active_mask)) {
-		spin_unlock(&global->lock);
 		trace_printk("ERR: not active\n");
 		return;
 	} else if (global->period_cnt != cinfo->period_cnt) {
 		trace_printk("ERR: global(%ld) != local(%ld) period mismatch\n",
 			     global->period_cnt, cinfo->period_cnt);
-		spin_unlock(&global->lock);
 		return;
 	}
 
@@ -635,7 +545,6 @@ static void memguard_process_overflow(struct irq_work *entry)
 	cpumask_set_cpu(smp_processor_id(), global->throttle_mask);
 	if (cpumask_equal(global->throttle_mask, global->active_mask)) {
 		/* all other cores are alreay throttled */
-		spin_unlock(&global->lock);
 		if (g_use_exclusive == 1) {
 			/* algorithm 1: last one get all remaining time */
 			cinfo->exclusive_mode = 1;
@@ -663,9 +572,7 @@ static void memguard_process_overflow(struct irq_work *entry)
 			trace_printk("ERR: don't throttle one active core\n");
 			return;
 		}
-	} else
-		spin_unlock(&global->lock);
-	
+	}
 
 	if (cinfo->prev_throttle_error)
 		return;
@@ -724,7 +631,6 @@ static void period_timer_callback_slave(void *info)
 	struct task_struct *target;
 	long new_period = (long)info;
 	int cpu = smp_processor_id();
-	int i;
 
 	/* must be irq disabled. hard irq */
 	BUG_ON(!irqs_disabled());
@@ -743,11 +649,8 @@ static void period_timer_callback_slave(void *info)
 	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
 
 	/* I'm actively participating */
-	spin_lock(&global->lock);
 	cpumask_clear_cpu(cpu, global->throttle_mask);
 	cpumask_set_cpu(cpu, global->active_mask);
-	spin_unlock(&global->lock);
-
 
 	/* unthrottle tasks (if any) */
 	if (cinfo->throttled_task)
@@ -755,7 +658,6 @@ static void period_timer_callback_slave(void *info)
 	else
 		target = current;
 	cinfo->throttled_task = NULL;
-	smp_mb(); // IMPORTANT. 
 
 #if USE_BWLOCK
 	/* bwlock check */
@@ -769,7 +671,7 @@ static void period_timer_callback_slave(void *info)
 			cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
 #if USE_BWLOCK_DYNPRIO
 			/* TBD: if there was deprioritized tasks, restore their priorities */
-			for (i = 0; i < cinfo->dprio_cnt; i++) {
+			for (int i = 0; i < cinfo->dprio_cnt; i++) {
 				int oprio = cinfo->dprio[i].origprio;
 				intr_set_user_nice(cinfo->dprio[i].task, oprio);
 			}
@@ -789,46 +691,11 @@ static void period_timer_callback_slave(void *info)
 	/* update statistics. */
 	update_statistics(cinfo);
 
-	/* task priority to weight conversion */
-	if (g_use_task_priority) {
-		int prio = current->static_prio - MAX_RT_PRIO;
-		if (prio < 0) 
-			prio = 0;
-		cinfo->weight = prio_to_weight[prio];
-		DEBUG(trace_printk("Task WGT: %d prio:%d\n", cinfo->weight, prio));
-	}
-
 	/* new budget assignment from user */
-	spin_lock(&global->lock);
-
-	if (cinfo->weight > 0) {
-		/* weight mode */
-		int wsum = 0;
-		for_each_cpu(i, global->active_mask)
-			wsum += per_cpu_ptr(core_info, i)->weight;
-		cinfo->budget = 
-			div64_u64((u64)global->max_budget*cinfo->weight, wsum);
-	} else if (cinfo->limit > 0) {
+	if (cinfo->limit > 0) {
 		/* limit mode */
 		cinfo->budget = cinfo->limit;
 	} 
-	spin_unlock(&global->lock);
-
-#if 0
-	if (cinfo->weight > 0) {
-		DEBUG(trace_printk("WGT: budget:%d/%d weight:%d/%d\n",
-				   cinfo->budget, global->max_budget,
-				   cinfo->weight, wsum));
-	}
-	if (cinfo->budget > global->max_budget) {
-		trace_printk("ERR: c->budget(%d) > g->max_budget(%d)\n",
-		     cinfo->budget, global->max_budget);
-	}
-	if (cinfo->budget == 0) {
-		WARN_ON_ONCE(1);
-		trace_printk("ERR: both limit and weight = 0");
-	}
-#endif
 
 	/* budget can't be zero? */
 	cinfo->budget = max(cinfo->budget, 1);
@@ -840,32 +707,8 @@ static void period_timer_callback_slave(void *info)
 		cinfo->event->hw.sample_period = cinfo->budget;
 	}
 
-
 	/* per-task donation policy */
-	if (!g_use_reclaim || rt_task(target)) {
-		cinfo->cur_budget = cinfo->budget;
-		DEBUG(trace_printk("HRT or !g_use_reclaim: don't donate\n"));
-	} else if (target->policy == SCHED_BATCH || 
-		   target->policy == SCHED_IDLE) {
-		/* Non rt task: donate all */
-		donate_budget(cinfo->period_cnt, cinfo->budget);
-		cinfo->cur_budget = 0;
-		DEBUG(trace_printk("NonRT: donate all %d\n", cinfo->budget));
-	} else if (target->policy == SCHED_NORMAL) {
-		BUG_ON(rt_task(target));
-		if (cinfo->used[PREDICTOR] < cinfo->budget) {
-			/* donate 'expected surplus' ahead of time. */
-			int surplus = max(cinfo->budget - cinfo->used[PREDICTOR], 0);
-			WARN_ON_ONCE(surplus > global->max_budget);
-			donate_budget(cinfo->period_cnt, surplus);
-			cinfo->cur_budget = cinfo->budget - surplus;
-			DEBUG(trace_printk("SRT: surplus: %d, budget: %d\n", surplus, 
-					   cinfo->budget));
-		} else {
-			cinfo->cur_budget = cinfo->budget;
-			DEBUG(trace_printk("SRT: don't donate\n"));
-		}
-	}
+	cinfo->cur_budget = cinfo->budget;
 
 	/* setup an interrupt */
 	cinfo->cur_budget = max(1, cinfo->cur_budget);
@@ -896,12 +739,9 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	if (orun == 0)
 		return HRTIMER_RESTART;
 
-	spin_lock(&global->lock);
 	global->period_cnt += orun;
-	global->budget = 0;
 	new_period = global->period_cnt;
 	cpumask_copy(active_mask, global->active_mask);
-	spin_unlock(&global->lock);
 
 	DEBUG(trace_printk("spinlock end\n"));
 	if (orun > 1)
@@ -1024,8 +864,6 @@ static struct perf_event *init_counter(int cpu, int budget)
 	/* success path */
 	pr_info("cpu%d enabled counter.\n", cpu);
 
-	smp_wmb();
-
 	return event;
 }
 
@@ -1080,22 +918,10 @@ static ssize_t memguard_control_write(struct file *filp,
 {
 	char buf[BUF_SIZE];
 	char *p = buf;
-	struct memguard_info *global = &memguard_info;
-
 	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0)
 		return 0;
 
-	if (!strncmp(p, "maxbw ", 6)) {
-		sscanf(p+6, "%d", &g_budget_max_bw);
-		global->max_budget =
-			convert_mb_to_events(g_budget_max_bw);
-		WARN_ON(global->max_budget == 0);
-	}
-	else if (!strncmp(p, "taskprio ", 9))
-		sscanf(p+9, "%d", &g_use_task_priority);
-	else if (!strncmp(p, "reclaim ", 8))
-		sscanf(p+8, "%d", &g_use_reclaim);
-	else if (!strncmp(p, "exclusive ", 10))
+	if (!strncmp(p, "exclusive ", 10))
 		sscanf(p+10, "%d", &g_use_exclusive);
 	else
 		pr_info("ERROR: %s\n", p);
@@ -1107,10 +933,7 @@ static int memguard_control_show(struct seq_file *m, void *v)
 	char buf[64];
 	struct memguard_info *global = &memguard_info;
 
-	seq_printf(m, "maxbw: %d (MB/s)\n", g_budget_max_bw);
-	seq_printf(m, "reclaim: %d\n", g_use_reclaim);
 	seq_printf(m, "exclusive: %d\n", g_use_exclusive);
-	seq_printf(m, "taskprio: %d\n", g_use_task_priority);
 	cpulist_scnprintf(buf, 64, global->active_mask);
 	seq_printf(m, "active: %s\n", buf);
 	cpulist_scnprintf(buf, 64, global->throttle_mask);
@@ -1141,29 +964,10 @@ static void __update_budget(void *info)
 		return;
 	}
 	cinfo->limit = (unsigned long)info;
-	cinfo->weight = 0;
 	DEBUG_USER(trace_printk("MSG: New budget of Core%d is %d\n",
 				smp_processor_id(), cinfo->budget));
 
 }
-
-static void __update_weight(void *info)
-{
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-
-	if ((unsigned long)info == 0) {
-		pr_info("ERR: Requested weight is zero\n");
-		return;
-	}
-
-	cinfo->weight = (unsigned long)info;
-	cinfo->limit = 0;
-	DEBUG_USER(trace_printk("MSG: New weight of Core%d is %d\n",
-				smp_processor_id(), cinfo->weight));
-}
-
-#define MAXPERF_EVENTS 163840  /* 10000 MB/s */
-#define THROTTLE_EVENTS 1638   /*   100 MB/s */
 
 static ssize_t memguard_limit_write(struct file *filp,
 				    const char __user *ubuf,
@@ -1172,9 +976,7 @@ static ssize_t memguard_limit_write(struct file *filp,
 	char buf[BUF_SIZE];
 	char *p = buf;
 	int i;
-	int max_budget = 0;
 	int use_mb = 0;
-	struct memguard_info *global = &memguard_info;
 
 	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0) 
 		return 0;
@@ -1191,12 +993,13 @@ static ssize_t memguard_limit_write(struct file *filp,
 			pr_err("ERR: CPU%d: input is zero: %s.\n",i, p);
 			continue;
 		}
-		if (!use_mb)
-			input = g_budget_max_bw*100/input;
-		events = (unsigned long)convert_mb_to_events(input);
-		max_budget += events;
+		if (use_mb)
+			events = (unsigned long)convert_mb_to_events(input);
+		else
+			events = input;
+
 		pr_info("CPU%d: New budget=%ld (%d %s)\n", i, 
-			events, input, (use_mb)?"MB/s": "pct");
+			events, input, (use_mb)?"MB/s": "events");
 		smp_call_function_single(i, __update_budget,
 					 (void *)events, 0);
 		
@@ -1204,39 +1007,27 @@ static ssize_t memguard_limit_write(struct file *filp,
 		if (!p) break;
 		p++;
 	}
-	global->max_budget = max_budget;
-	g_budget_max_bw = convert_events_to_mb(max_budget);
 	return cnt;
 }
 
 static int memguard_limit_show(struct seq_file *m, void *v)
 {
 	int i, cpu;
-	int wsum = 0;
-	struct memguard_info *global = &memguard_info;
 	cpu = get_cpu();
 
 	seq_printf(m, "cpu  |budget (MB/s,pct,weight)\n");
 	seq_printf(m, "-------------------------------\n");
 
-	for_each_online_cpu(i)
-		wsum += per_cpu_ptr(core_info, i)->weight;
 	for_each_online_cpu(i) {
 		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		int budget = 0, pct;
+		int budget = 0;
 		if (cinfo->limit > 0)
 			budget = cinfo->limit;
-		else if (cinfo->weight > 0) {
-			budget = (int)div64_u64((u64)global->max_budget*
-						cinfo->weight, wsum);
-		}
+
 		WARN_ON_ONCE(budget == 0);
-		pct = div64_u64((u64)budget * 100 + (global->max_budget-1),
-				(global->max_budget) ? global->max_budget : 1);
-		seq_printf(m, "CPU%d: %d (%dMB/s, %d pct, w%d)\n", 
-			   i, budget,
-			   convert_events_to_mb(budget),
-			   pct, cinfo->weight);
+		seq_printf(m, "CPU%d: %d (%dMB/s)\n", 
+				   i, budget,
+				   convert_events_to_mb(budget));
 #if USE_BWLOCK_DYNPRIO
 		int j;
 		for (j = 0; j < cinfo->dprio_cnt; j++) {
@@ -1245,8 +1036,6 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 		}
 #endif
 	}
-	seq_printf(m, "g_budget_max_bw: %d MB/s, (%d)\n", g_budget_max_bw,
-		global->max_budget);
 #if USE_BWLOCK
 	seq_printf(m, "bwlocked_core: %d\n", global->bwlocked_cores);
 #endif
@@ -1263,45 +1052,6 @@ static int memguard_limit_open(struct inode *inode, struct file *filp)
 static const struct file_operations memguard_limit_fops = {
 	.open		= memguard_limit_open,
 	.write          = memguard_limit_write,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-
-static ssize_t memguard_share_write(struct file *filp,
-				    const char __user *ubuf,
-				    size_t cnt, loff_t *ppos)
-{
-	char buf[BUF_SIZE];
-	char *p = buf;
-	int i, cpu;
-
-	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0)
-		return 0;
-	cpu = get_cpu();
-	for_each_online_cpu(i) {
-		unsigned long input;
-		sscanf(p, "%ld", &input);
-
-		pr_info("CPU%d: input=%ld\n", i, input);
-		if (input == 0)
-			input = 1024;
-		pr_info("CPU%d: New weight=%ld\n", i, input);
-		smp_call_function_single(i, __update_weight,
-					 (void *)input, 0);
-		p = strchr(p, ' ');
-		if (!p) break;
-		p++;
-	}
-	put_cpu();
-	return cnt;
-}
-
-
-static const struct file_operations memguard_share_fops = {
-	.open		= memguard_limit_open,
-	.write          = memguard_share_write,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
@@ -1360,101 +1110,6 @@ static const struct file_operations memguard_usage_fops = {
 	.release	= single_release,
 };
 
-static void __reset_stats(void *info)
-{
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-	DEBUG_USER(trace_printk("CPU%d\n", smp_processor_id()));
-
-	/* update local period information */
-	cinfo->period_cnt = 0;
-	cinfo->used[0] = cinfo->used[1] = cinfo->used[2] =
-		cinfo->budget; /* initial condition */
-	cinfo->cur_budget = cinfo->budget;
-	cinfo->overall.used_budget = 0;
-	cinfo->overall.assigned_budget = 0;
-	cinfo->overall.throttled_time_ns = 0;
-	cinfo->overall.throttled = 0;
-	cinfo->overall.throttled_error = 0;
-
-	memset(cinfo->overall.throttled_error_dist, 0, sizeof(int)*10);
-	cinfo->throttled_time = ktime_set(0,0);
-
-	DEBUG_USER(trace_printk("MSG: Clear statistics of Core%d\n",
-				smp_processor_id()));
-}
-
-
-static ssize_t memguard_failcnt_write(struct file *filp,
-				    const char __user *ubuf,
-				    size_t cnt, loff_t *ppos)
-{
-	/* reset local statistics */
-	struct memguard_info *global = &memguard_info;
-
-	spin_lock(&global->lock);
-	global->budget = global->period_cnt = 0;
-	global->start_tick = jiffies;
-	spin_unlock(&global->lock);
-	on_each_cpu(__reset_stats, NULL, 0);
-	return cnt;
-}
-
-static int memguard_failcnt_show(struct seq_file *m, void *v)
-{
-	int i;
-
-	/* total #of throttled periods */
-	seq_printf(m, "throttled: ");
-	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		seq_printf(m, "%d ", cinfo->overall.throttled);
-	}
-	seq_printf(m, "\nthrottle_error: ");
-	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		seq_printf(m, "%lld ", cinfo->overall.throttled_error);
-	}
-
-	seq_printf(m, "\ncore-pct   10    20    30    40    50    60    70    80    90    100\n");
-	seq_printf(m, "--------------------------------------------------------------------");
-	for_each_online_cpu(i) {
-		int idx;
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		seq_printf(m, "\n%4d    ", i);
-		for (idx = 0; idx < 10; idx++)
-			seq_printf(m, "%5d ",
-				cinfo->overall.throttled_error_dist[idx]);
-	}
-
-	/* total #of exclusive mode periods */
-	seq_printf(m, "\nexclusive: ");
-	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		seq_printf(m, "%d(%lld ms|%lld MB) ", cinfo->overall.exclusive,
-			   cinfo->overall.exclusive_ns >> 20, 
-			   (cinfo->overall.exclusive_bw * CACHE_LINE_SIZE) >> 20);
-	}
-
-	/* out of total periods */
-	seq_printf(m, "\ntotal_periods: ");
-	for_each_online_cpu(i)
-		seq_printf(m, "%ld ", per_cpu_ptr(core_info, i)->period_cnt);
-	return 0;
-}
-
-static int memguard_failcnt_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, memguard_failcnt_show, NULL);
-}
-
-static const struct file_operations memguard_failcnt_fops = {
-	.open		= memguard_failcnt_open,
-	.write          = memguard_failcnt_write,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
 static int memguard_init_debugfs(void)
 {
 
@@ -1466,14 +1121,8 @@ static int memguard_init_debugfs(void)
 	debugfs_create_file("limit", 0444, memguard_dir, NULL,
 			    &memguard_limit_fops);
 
-	debugfs_create_file("share", 0444, memguard_dir, NULL,
-			    &memguard_share_fops);
-
 	debugfs_create_file("usage", 0666, memguard_dir, NULL,
 			    &memguard_usage_fops);
-
-	debugfs_create_file("failcnt", 0644, memguard_dir, NULL,
-			    &memguard_failcnt_fops);
 	return 0;
 }
 
@@ -1516,16 +1165,13 @@ static int memguard_idle_notifier(struct notifier_block *nb, unsigned long val,
 				void *data)
 {
 	struct memguard_info *global = &memguard_info;
-	unsigned long flags;
 
 	DEBUG(trace_printk("idle state update: %ld\n", val));
 
-	spin_lock_irqsave(&global->lock, flags);
 	if (val == IDLE_START) {
 		cpumask_clear_cpu(smp_processor_id(), global->active_mask);
 	} else
 		cpumask_set_cpu(smp_processor_id(), global->active_mask);
-	spin_unlock_irqrestore(&global->lock, flags);
 
 	DEBUG(if (cpumask_equal(global->throttle_mask, global->active_mask))
 			  trace_printk("DBG: last idle\n"););
@@ -1560,10 +1206,8 @@ int init_module( void )
 		return -ENODEV;
 	}
 
-	spin_lock_init(&global->lock);
 	global->start_tick = jiffies;
 	global->period_in_ktime = ktime_set(0, g_period_us * 1000);
-	global->max_budget = convert_mb_to_events(g_budget_max_bw);
 
 	/* initialize all online cpus to be active */
 	cpumask_copy(global->active_mask, cpu_online_mask);
@@ -1571,35 +1215,24 @@ int init_module( void )
 	pr_info("ARCH: %s\n", g_hw_type);
 	pr_info("HZ=%d, g_period_us=%d\n", HZ, g_period_us);
 
-	/* Memory performance characteristics */
-	if (g_budget_max_bw == 0) {
-		printk(KERN_INFO "budget_max must be set\n");
-		return -ENODEV;
-	}
-
-	pr_info("Max. b/w: %d (MB/s)\n", g_budget_max_bw);
-	pr_info("Max. events per %d us: %lld\n", g_period_us,
-	       convert_mb_to_events(g_budget_max_bw));
-
 	pr_info("Initilizing perf counter\n");
 	core_info = alloc_percpu(struct core_info);
 
 	get_online_cpus();
 	for_each_online_cpu(i) {
 		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		int budget, mb;
+		int budget;
 
 		if (i >= MAX_NCPUS) {
 			printk(KERN_INFO "too many cores. up to %d is supported\n", MAX_NCPUS);
 			return -ENODEV;
 		}
 		/* initialize counter h/w & event structure */
-		if (g_budget_pct[i] == 0) /* uninitialized. assign max value */
-			g_budget_pct[i] = 100 / num_online_cpus();
-		mb = div64_u64((u64)g_budget_max_bw * g_budget_pct[i],  100);
-		budget = convert_mb_to_events(mb);
-		pr_info("budget[%d] = %d (%d pct, %d MB/s)\n", i,
-		       budget,g_budget_pct[i], mb);
+		if (g_budget_mb[i] == 0)
+			g_budget_mb[i] = 1000;
+
+		budget = convert_mb_to_events(g_budget_mb[i]);
+		pr_info("budget[%d] = %d (%d MB)\n", i, budget, g_budget_mb[i]);
 
 		/* initialize per-core data structure */
 		memset(cinfo, 0, sizeof(struct core_info));
@@ -1630,7 +1263,19 @@ int init_module( void )
 		init_waitqueue_head(&cinfo->throttle_evt);
 
 		/* initialize statistics */
-		__reset_stats(cinfo);
+		/* update local period information */
+		cinfo->period_cnt = 0;
+		cinfo->used[0] = cinfo->used[1] = cinfo->used[2] =
+			cinfo->budget; /* initial condition */
+		cinfo->cur_budget = cinfo->budget;
+		cinfo->overall.used_budget = 0;
+		cinfo->overall.assigned_budget = 0;
+		cinfo->overall.throttled_time_ns = 0;
+		cinfo->overall.throttled = 0;
+		cinfo->overall.throttled_error = 0;
+
+		memset(cinfo->overall.throttled_error_dist, 0, sizeof(int)*10);
+		cinfo->throttled_time = ktime_set(0,0);
 
 		print_core_info(smp_processor_id(), cinfo);
 
