@@ -1502,6 +1502,7 @@ static int throttle_thread(void *arg)
 
 		while (cinfo->throttled_task && !kthread_should_stop())
 		{
+			smp_mb();
 			cpu_relax();
 			/* TODO: mwait */
 		}
