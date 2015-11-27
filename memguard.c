@@ -543,6 +543,7 @@ static void memguard_process_overflow(struct irq_work *entry)
 
 	/* we are going to be throttled */
 	cpumask_set_cpu(smp_processor_id(), global->throttle_mask);
+	smp_mb(); // w -> r ordering of the local cpu.
 	if (cpumask_equal(global->throttle_mask, global->active_mask)) {
 		/* all other cores are alreay throttled */
 		if (g_use_exclusive == 1) {
@@ -650,6 +651,7 @@ static void period_timer_callback_slave(void *info)
 
 	/* I'm actively participating */
 	cpumask_clear_cpu(cpu, global->throttle_mask);
+	smp_mb();
 	cpumask_set_cpu(cpu, global->active_mask);
 
 	/* unthrottle tasks (if any) */
@@ -1171,6 +1173,8 @@ static int memguard_idle_notifier(struct notifier_block *nb, unsigned long val,
 		cpumask_clear_cpu(smp_processor_id(), global->active_mask);
 	} else
 		cpumask_set_cpu(smp_processor_id(), global->active_mask);
+
+	smp_mb();
 
 	DEBUG(if (cpumask_equal(global->throttle_mask, global->active_mask))
 			  trace_printk("DBG: last idle\n"););
