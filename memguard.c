@@ -960,8 +960,6 @@ static struct perf_event *init_counting_counter(int cpu, int id)
 	/* success path */
 	pr_info("cpu%d enabled counter type %d.\n", cpu, (int)id);
 
-	smp_wmb();
-
 	return event;
 }
 #endif
@@ -1023,8 +1021,6 @@ static struct perf_event *init_counter(int cpu, int budget)
 
 	/* success path */
 	pr_info("cpu%d enabled counter.\n", cpu);
-
-	smp_wmb();
 
 	return event;
 }
