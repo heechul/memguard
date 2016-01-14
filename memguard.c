@@ -14,7 +14,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define USE_RCFS   0
-#define USE_BWLOCK 0
+#define USE_BWLOCK 1
 #define USE_BWLOCK_DYNPRIO 0
 
 #define DEBUG(x)
@@ -153,7 +153,7 @@ static struct core_info __percpu *core_info;
 
 static char *g_hw_type = "";
 static int g_period_us = 1000;
-static int g_use_bwlock = 0;
+static int g_use_bwlock = 1;
 static int g_use_exclusive = 0;
 static int g_budget_mb[MAX_NCPUS];
 
@@ -673,7 +673,8 @@ static void period_timer_callback_slave(void *info)
 			cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
 #if USE_BWLOCK_DYNPRIO
 			/* TBD: if there was deprioritized tasks, restore their priorities */
-			for (int i = 0; i < cinfo->dprio_cnt; i++) {
+			int i;
+			for (i = 0; i < cinfo->dprio_cnt; i++) {
 				int oprio = cinfo->dprio[i].origprio;
 				intr_set_user_nice(cinfo->dprio[i].task, oprio);
 			}
@@ -1037,6 +1038,7 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 #endif
 	}
 #if USE_BWLOCK
+	struct memguard_info *global = &memguard_info;
 	seq_printf(m, "bwlocked_core: %d\n", global->bwlocked_cores);
 #endif
 
