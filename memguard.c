@@ -14,7 +14,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define USE_RCFS   0
-#define USE_BWLOCK 1
+#define USE_BWLOCK 0
 #define USE_BWLOCK_DYNPRIO 0
 
 #define DEBUG(x)
