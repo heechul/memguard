@@ -50,8 +50,6 @@
 #if LINUX_VERSION_CODE > KERNEL_VERSION(3, 8, 0)
 #  include <linux/sched/rt.h>
 #endif
-#include <linux/cpu.h>
-#include <asm/idle.h>
 #include <linux/sched.h>
 
 /**************************************************************************
@@ -242,7 +240,7 @@ static void memguard_on_each_cpu_mask(const struct cpumask *mask,
 	}
 }
 
-static int __cpuinit memguard_cpu_callback(struct notifier_block *nfb,
+static int memguard_cpu_callback(struct notifier_block *nfb,
 					 unsigned long action, void *hcpu)
 {
 	unsigned int cpu = (unsigned long)hcpu;
@@ -260,7 +258,7 @@ static int __cpuinit memguard_cpu_callback(struct notifier_block *nfb,
 	return NOTIFY_OK;
 }
 
-static struct notifier_block __cpuinitdata memguard_cpu_notifier =
+static struct notifier_block memguard_cpu_notifier =
 {
 	.notifier_call = memguard_cpu_callback,
 };
@@ -931,7 +929,6 @@ static ssize_t memguard_control_write(struct file *filp,
 
 static int memguard_control_show(struct seq_file *m, void *v)
 {
-	char buf[64];
 	struct memguard_info *global = &memguard_info;
 
 	seq_printf(m, "exclusive: %d\n", g_use_exclusive);
