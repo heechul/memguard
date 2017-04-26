@@ -930,7 +930,7 @@ static ssize_t memguard_control_write(struct file *filp,
 static int memguard_control_show(struct seq_file *m, void *v)
 {
 	struct memguard_info *global = &memguard_info;
-
+	char buf[BUF_SIZE];
 	seq_printf(m, "exclusive: %d\n", g_use_exclusive);
 	cpulist_scnprintf(buf, 64, global->active_mask);
 	seq_printf(m, "active: %s\n", buf);
