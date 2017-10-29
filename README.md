@@ -66,4 +66,7 @@ Once the module is loaded, it provides several configuration interfaces as follo
 	last exclusive. last core exclusively use the rest b/w (not in the paper)
 	# echo exclusive 1 > /sys/kernel/debug/memguard/control
 
-
+NOTE
+=====
+At the moment, Memguard is functional for Linux kernel version 4.0 and older
+only. Porting of Memguard to newer Linux kernels is in progress.
