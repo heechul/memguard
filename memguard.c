@@ -15,7 +15,6 @@
 
 #define USE_RCFS   0
 #define USE_BWLOCK 0
-#define USE_BWLOCK_DYNPRIO 0
 
 #define DEBUG(x)
 #define DEBUG_RECLAIM(x)
@@ -75,28 +74,12 @@ struct memstat{
 	u64 exclusive_bw;        /* exclusive mode used bandwidth */
 };
 
-#if USE_BWLOCK_DYNPRIO
-
-#define MAX_DYNPRIO_TSKS 20
-#define NICE_TO_PRIO(nice)	(MAX_RT_PRIO + (nice) + 20)
-#define PRIO_TO_NICE(prio)	((prio) - MAX_RT_PRIO - 20)
-
-struct dynprio {
-	struct task_struct *task;
-	int origprio;
-	ktime_t start;
-};
-#endif
-
 /* percpu info */
 struct core_info {
 	/* user configurations */
 	int budget;              /* assigned budget */
 	int limit;               /* limit mode (exclusive to weight)*/
-#if USE_BWLOCK_DYNPRIO
-	struct dynprio dprio[100];
-	int dprio_cnt;
-#endif
+
 	/* for control logic */
 	int cur_budget;          /* currently available budget */
 
@@ -157,8 +140,6 @@ static int g_budget_mb[MAX_NCPUS];
 
 static struct dentry *memguard_dir;
 
-static int g_test = 0;
-
 /* copied from kernel/sched/sched.h */
 static const int prio_to_weight[40] = {
  /* -20 */     88761,     71755,     56483,     46273,     36291,
@@ -191,7 +172,6 @@ static int sysctl_throttle_bw_mb = 100;
 /**************************************************************************
  * External Function Prototypes
  **************************************************************************/
-extern int idle_cpu(int cpu);
 #if USE_BWLOCK
 extern int nr_bwlocked_cores(void);
 #endif
@@ -200,7 +180,6 @@ extern void register_get_cpi(int (*func_ptr)(void));
 /**************************************************************************
  * Local Function Prototypes
  **************************************************************************/
-static int self_test(void);
 static void period_timer_callback_slave(void *info);
 enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer);
 static void memguard_process_overflow(struct irq_work *entry);
@@ -212,9 +191,6 @@ static void memguard_on_each_cpu_mask(const struct cpumask *mask,
 /**************************************************************************
  * Module parameters
  **************************************************************************/
-
-module_param(g_test, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(g_test, "number of test iterations");
 
 module_param(g_hw_type, charp,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_hw_type, "hardware type");
@@ -239,30 +215,6 @@ static void memguard_on_each_cpu_mask(const struct cpumask *mask,
 		func(info);
 	}
 }
-
-static int memguard_cpu_callback(struct notifier_block *nfb,
-					 unsigned long action, void *hcpu)
-{
-	unsigned int cpu = (unsigned long)hcpu;
-	
-	switch (action) {
-	case CPU_ONLINE:
-	case CPU_ONLINE_FROZEN:
-		trace_printk("CPU%d is online\n", cpu);
-		break;
-	case CPU_DEAD:
-	case CPU_DEAD_FROZEN:
-		trace_printk("CPU%d is offline\n", cpu);
-		break;
-	}
-	return NOTIFY_OK;
-}
-
-static struct notifier_block memguard_cpu_notifier =
-{
-	.notifier_call = memguard_cpu_callback,
-};
-
 
 /** convert MB/s to #of events (i.e., LLC miss counts) per 1ms */
 static inline u64 convert_mb_to_events(int mb)
@@ -379,7 +331,7 @@ void update_statistics(struct core_info *cinfo)
 	/* core is currently throttled. */
 	if (cinfo->throttled_task) {
 		cinfo->overall.throttled_time_ns +=
-			(ktime_get().tv64 - cinfo->throttled_time.tv64);
+			(ktime_get() - cinfo->throttled_time);
 		cinfo->overall.throttled++;
 	}
 
@@ -403,7 +355,7 @@ void update_statistics(struct core_info *cinfo)
 		u64 exclusive_ns, exclusive_bw;
 
 		/* used time */
-		exclusive_ns = (ktime_get().tv64 - cinfo->exclusive_time.tv64);
+		exclusive_ns = (ktime_get() - cinfo->exclusive_time);
 		
 		/* used bw */
 		exclusive_bw = (cinfo->used[0] - cinfo->budget);
@@ -472,29 +424,6 @@ static void __newperiod(void *info)
 		on_each_cpu(period_timer_callback_slave, (void *)new_period, 0);
 	} 
 }
-
-#if USE_BWLOCK_DYNPRIO
-static void set_load_weight(struct task_struct *p)
-{
-	int prio = p->static_prio - MAX_RT_PRIO;
-	struct load_weight *load = &p->se.load;
-	load->weight = prio_to_weight[prio];
-	load->inv_weight = prio_to_wmult[prio];
-}
-
-void intr_set_user_nice(struct task_struct *p, long nice)
-{
-	if (task_nice(p) == nice || nice < -20 || nice > 19)
-		return;
-
-	if (p->policy != SCHED_NORMAL)
-		return;
-
-	p->static_prio = NICE_TO_PRIO(nice);
-	set_load_weight(p);
-	p->prio = p->static_prio;
-}
-#endif
 
 /**
  * memory overflow handler.
@@ -579,31 +508,12 @@ static void memguard_process_overflow(struct irq_work *entry)
 	 * fail to reclaim. now throttle this core
 	 */
 	DEBUG_RECLAIM(trace_printk("fail to reclaim after %lld nsec.\n",
-				   ktime_get().tv64 - start.tv64));
+				   ktime_get() - start));
 
 	/* wake-up throttle task */
 	cinfo->throttled_task = current;
 	cinfo->throttled_time = start;
 
-#if USE_BWLOCK_DYNPRIO
-	/* dynamically lower the throttled task's priority */
-	int i;
-	for (i = 0; i < cinfo->dprio_cnt; i++) {
-		if (cinfo->dprio[i].task == current)
-			break;
-	}
-	if (i == cinfo->dprio_cnt && i < MAX_DYNPRIO_TSKS) {
-		cinfo->dprio[i].task = current;
-		cinfo->dprio[i].start = start;
-		cinfo->dprio[i].origprio = task_nice(current);
-		cinfo->dprio_cnt++;
-	}
-
-	ktime_t dur = ktime_sub(start, global->cur_period_start);
-	int n = 19 - 20 * (dur.tv64/1000) / g_period_us;
-	DEBUG_BWLOCK(trace_printk("dynprio %6s %d\n", current->comm, n));
-	intr_set_user_nice(current, n);
-#endif
 	WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
 	wake_up_interruptible(&cinfo->throttle_evt);
 }
@@ -669,15 +579,6 @@ static void period_timer_callback_slave(void *info)
 				cinfo->limit = convert_mb_to_events(sysctl_throttle_bw_mb);
 		} else {
 			cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
-#if USE_BWLOCK_DYNPRIO
-			/* TBD: if there was deprioritized tasks, restore their priorities */
-			int i;
-			for (i = 0; i < cinfo->dprio_cnt; i++) {
-				int oprio = cinfo->dprio[i].origprio;
-				intr_set_user_nice(cinfo->dprio[i].task, oprio);
-			}
-			cinfo->dprio_cnt = 0;
-#endif
 		}
 	}
 	DEBUG_BWLOCK(trace_printk("%s|bwlock_val %d|g->bwlocked_cores %d\n", 
@@ -729,7 +630,6 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	ktime_t now;
 	int orun;
 	long new_period;
-	cpumask_var_t active_mask;
 
 	now = timer->base->get_time();
 	global->cur_period_start = now;
@@ -742,7 +642,6 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 
 	global->period_cnt += orun;
 	new_period = global->period_cnt;
-	cpumask_copy(active_mask, global->active_mask);
 
 	DEBUG(trace_printk("spinlock end\n"));
 	if (orun > 1)
@@ -751,7 +650,7 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 #if USE_BWLOCK
 	global->bwlocked_cores = mg_nr_bwlocked_cores();
 #endif
-	memguard_on_each_cpu_mask(active_mask,
+	memguard_on_each_cpu_mask(global->active_mask,
 		period_timer_callback_slave, (void *)new_period, 0);
 
 	DEBUG(trace_printk("master end\n"));
@@ -803,7 +702,7 @@ static struct perf_event *init_counting_counter(int cpu, int id)
 
 	return event;
 }
-#endif
+#endif /* RCFS */
 
 static struct perf_event *init_counter(int cpu, int budget)
 {
@@ -932,9 +831,9 @@ static int memguard_control_show(struct seq_file *m, void *v)
 	struct memguard_info *global = &memguard_info;
 	char buf[BUF_SIZE];
 	seq_printf(m, "exclusive: %d\n", g_use_exclusive);
-	cpulist_scnprintf(buf, 64, global->active_mask);
+	cpumap_print_to_pagebuf(1, buf, global->active_mask);
 	seq_printf(m, "active: %s\n", buf);
-	cpulist_scnprintf(buf, 64, global->throttle_mask);
+	cpumap_print_to_pagebuf(1, buf, global->throttle_mask);	
 	seq_printf(m, "throttle: %s\n", buf);
 	return 0;
 }
@@ -1026,13 +925,6 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 		seq_printf(m, "CPU%d: %d (%dMB/s)\n", 
 				   i, budget,
 				   convert_events_to_mb(budget));
-#if USE_BWLOCK_DYNPRIO
-		int j;
-		for (j = 0; j < cinfo->dprio_cnt; j++) {
-			seq_printf(m, "\t%12s  %3d\n", (cinfo->dprio[j].task)->comm, 
-				   cinfo->dprio[j].origprio);
-		}
-#endif
 	}
 #if USE_BWLOCK
 	struct memguard_info *global = &memguard_info;
@@ -1160,33 +1052,6 @@ static int throttle_thread(void *arg)
 	return 0;
 }
 
-/* Idle notifier to look at idle CPUs */
-static int memguard_idle_notifier(struct notifier_block *nb, unsigned long val,
-				void *data)
-{
-	struct memguard_info *global = &memguard_info;
-
-	DEBUG(trace_printk("idle state update: %ld\n", val));
-
-	if (val == IDLE_START) {
-		cpumask_clear_cpu(smp_processor_id(), global->active_mask);
-	} else
-		cpumask_set_cpu(smp_processor_id(), global->active_mask);
-
-	smp_mb();
-
-	DEBUG(if (cpumask_equal(global->throttle_mask, global->active_mask))
-			  trace_printk("DBG: last idle\n"););
-
-	return 0;
-}
-
-static struct notifier_block memguard_idle_nb = {
-	.notifier_call = memguard_idle_notifier,
-};
-
-
-
 int init_module( void )
 {
 	int i;
@@ -1200,11 +1065,6 @@ int init_module( void )
 
 	if (g_period_us < 0 || g_period_us > 1000000) {
 		printk(KERN_INFO "Must be 0 < period < 1 sec\n");
-		return -ENODEV;
-	}
-
-	if (g_test) {
-		self_test();
 		return -ENODEV;
 	}
 
@@ -1296,15 +1156,13 @@ int init_module( void )
 		wake_up_process(cinfo->throttle_thread);
 	}
 
-	register_hotcpu_notifier(&memguard_cpu_notifier);
-
 	memguard_init_debugfs();
 
 	pr_info("Start event counters\n");
 	start_counters();
 
 	pr_info("Start period timer (period=%lld us)\n",
-		div64_u64(global->period_in_ktime.tv64, 1000));
+		div64_u64(global->period_in_ktime, 1000));
 
 	get_cpu();
 	global->master = smp_processor_id();
@@ -1320,7 +1178,6 @@ int init_module( void )
 	register_get_cpi(&get_cpi);
 #endif
 
-	idle_notifier_register(&memguard_idle_nb);
 	return 0;
 }
 
@@ -1358,10 +1215,6 @@ void cleanup_module( void )
 #endif
 	}
 
-	/* unregister callbacks */
-	idle_notifier_unregister(&memguard_idle_nb);
-	unregister_hotcpu_notifier(&memguard_cpu_notifier);
-
 	/* remove debugfs entries */
 	debugfs_remove_recursive(memguard_dir);
 
@@ -1376,41 +1229,3 @@ void cleanup_module( void )
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Heechul Yun <heechul@illinois.edu>");
-
-
-static void test_ipi_cb(void *info)
-{
-	trace_printk("IPI called on %d\n", smp_processor_id());
-}
-
-enum hrtimer_restart test_timer_cb(struct hrtimer *timer)
-{
-	ktime_t now;
-	now = timer->base->get_time();
-	hrtimer_forward(timer, now, ktime_set(0, 1000 * 1000));
-	trace_printk("master begin\n");
-	on_each_cpu(test_ipi_cb, 0, 0);
-	trace_printk("master end\n");
-	g_test--;
-	if (g_test == 0) 
-		return HRTIMER_NORESTART;
-	else
-		return HRTIMER_RESTART;
-}
-
-static int self_test(void)
-{
-	struct hrtimer __test_hr_timer;
-
-	hrtimer_init(&__test_hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED );
-	__test_hr_timer.function = &test_timer_cb;
-	hrtimer_start(&__test_hr_timer, ktime_set(0, 1000 * 1000), /* 1ms */
-		      HRTIMER_MODE_REL_PINNED);
-
-	while (g_test) {
-		cpu_relax();
-	}
-
-	return 0;
-}
-
