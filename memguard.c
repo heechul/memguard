@@ -759,6 +759,9 @@ static struct perf_event *init_counter(int cpu, int budget)
 		return NULL;
 	}
 
+	/* This is needed since 4.1? */
+	perf_event_enable(event);
+
 	/* success path */
 	pr_info("cpu%d enabled counter.\n", cpu);
 
