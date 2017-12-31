@@ -59,6 +59,12 @@
 #define BUF_SIZE 256
 #define PREDICTOR 1  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 10, 0) // somewhere between 4.4-4.10
+#  define TM_NS(x) (x)
+#else
+#  define TM_NS(x) (x).tv64
+#endif
+
 /**************************************************************************
  * Public Types
  **************************************************************************/
@@ -331,7 +337,7 @@ void update_statistics(struct core_info *cinfo)
 	/* core is currently throttled. */
 	if (cinfo->throttled_task) {
 		cinfo->overall.throttled_time_ns +=
-			(ktime_get() - cinfo->throttled_time);
+			(TM_NS(ktime_get()) - TM_NS(cinfo->throttled_time));
 		cinfo->overall.throttled++;
 	}
 
@@ -355,7 +361,8 @@ void update_statistics(struct core_info *cinfo)
 		u64 exclusive_ns, exclusive_bw;
 
 		/* used time */
-		exclusive_ns = (ktime_get() - cinfo->exclusive_time);
+		exclusive_ns = (TM_NS(ktime_get()) -
+				TM_NS(cinfo->exclusive_time));
 		
 		/* used bw */
 		exclusive_bw = (cinfo->used[0] - cinfo->budget);
@@ -508,7 +515,7 @@ static void memguard_process_overflow(struct irq_work *entry)
 	 * fail to reclaim. now throttle this core
 	 */
 	DEBUG_RECLAIM(trace_printk("fail to reclaim after %lld nsec.\n",
-				   ktime_get() - start));
+				   TM_NS(ktime_get()) - TM_NS(start)));
 
 	/* wake-up throttle task */
 	cinfo->throttled_task = current;
@@ -1164,7 +1171,7 @@ int init_module( void )
 	start_counters();
 
 	pr_info("Start period timer (period=%lld us)\n",
-		div64_u64(global->period_in_ktime, 1000));
+		div64_u64(TM_NS(global->period_in_ktime), 1000));
 
 	get_cpu();
 	global->master = smp_processor_id();
