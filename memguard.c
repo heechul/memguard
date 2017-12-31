@@ -19,9 +19,9 @@
 #define DEBUG(x)
 #define DEBUG_RECLAIM(x)
 #define DEBUG_USER(x)
-#define DEBUG_BWLOCK(x) x
+#define DEBUG_BWLOCK(x) 
 #define DEBUG_PROFILE(x) x
-#define DEBUG_RCFS(x) x
+#define DEBUG_RCFS(x) 
 
 /**************************************************************************
  * Included Files
@@ -643,7 +643,6 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	global->period_cnt += orun;
 	new_period = global->period_cnt;
 
-	DEBUG(trace_printk("spinlock end\n"));
 	if (orun > 1)
 		trace_printk("ERR: timer overrun %d at period %ld\n",
 			    orun, new_period);
