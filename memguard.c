@@ -676,7 +676,6 @@ static struct perf_event *init_counting_counter(int cpu, int id)
 		.pinned		= 1,
 		.disabled	= 1,
 		.exclude_kernel = 1,   /* TODO: 1 mean, no kernel mode counting */
-		.pinned = 1,
 	};
 
 	/* Try to register using hardware perf events */
@@ -722,7 +721,6 @@ static struct perf_event *init_counter(int cpu, int budget)
 		.pinned		= 1,
 		.disabled	= 1,
 		.exclude_kernel = 1,   /* TODO: 1 mean, no kernel mode counting */
-		.pinned = 1,
 	};
 
 	if (!strcmp(g_hw_type, "core2")) {
