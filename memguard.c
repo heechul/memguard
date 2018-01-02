@@ -675,7 +675,6 @@ static struct perf_event *init_counting_counter(int cpu, int id)
 		.pinned		= 1,
 		.disabled	= 1,
 		.exclude_kernel = 1,   /* TODO: 1 mean, no kernel mode counting */
-		.pinned = 1,
 	};
 
 	/* Try to register using hardware perf events */
@@ -703,6 +702,9 @@ static struct perf_event *init_counting_counter(int cpu, int id)
 		return NULL;
 	}
 
+	/* This is needed since 4.1? */
+	perf_event_enable(event);
+	
 	/* success path */
 	pr_info("cpu%d enabled counter type %d.\n", cpu, (int)id);
 
@@ -721,7 +723,6 @@ static struct perf_event *init_counter(int cpu, int budget)
 		.pinned		= 1,
 		.disabled	= 1,
 		.exclude_kernel = 1,   /* TODO: 1 mean, no kernel mode counting */
-		.pinned = 1,
 	};
 
 	if (!strcmp(g_hw_type, "core2")) {
@@ -732,10 +733,13 @@ static struct perf_event *init_counter(int cpu, int budget)
 	} else if (!strcmp(g_hw_type, "snb")) {
 		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
 		sched_perf_hw_attr.config         = 0x08b0; /* 08b0 - incl. prefetch */
+	} else if (!strcmp(g_hw_type, "armv7")) {
+		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
+		sched_perf_hw_attr.config         = 0x17; /* Level 2 data cache refill */
 	} else if (!strcmp(g_hw_type, "soft")) {
 		sched_perf_hw_attr.type           = PERF_TYPE_SOFTWARE;
 		sched_perf_hw_attr.config         = PERF_COUNT_SW_CPU_CLOCK;
-	}
+	} 
 
 	/* select based on requested event type */
 	sched_perf_hw_attr.sample_period = budget;
@@ -1215,6 +1219,8 @@ void cleanup_module( void )
 		pr_info("Stopping kthrottle/%d\n", i);
 		cinfo->throttled_task = NULL;
 		kthread_stop(cinfo->throttle_thread);
+
+		perf_event_disable(cinfo->event);
 		perf_event_release_kernel(cinfo->event); 
 		cinfo->event = NULL; 
 #if USE_RCFS
