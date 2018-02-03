@@ -1,9 +1,8 @@
 #!/bin/bash
 
 . ./functions
-
+export PATH=$HOME/bin:$PATH
 echo "LLC miss evt: 0x${llc_miss_evt}"
-echo "arch bit: ${archbit}bit"
 plot()
 {
     # file msut be xxx.dat form
@@ -13,7 +12,7 @@ plot()
     file="${bench}_${start}-${finish}"
     cat > ${file}.scr <<EOF
 set terminal postscript eps enhanced color "Times-Roman" 22
-set yrange [0:500000]
+set yrange [0:100000]
 set xrange [$start:$finish]
 plot '$bench.dat' ti "$bench" w l
 EOF
@@ -97,28 +96,26 @@ print_sysinfo()
 # benchb="$allspec2006"
 # benchb="462.libquantum 433.milc 434.zeusmp 437.leslie3d"
 # benchb="433.milc"
-
 #benchb="429.mcf"
 #benchb=$allspec2006sorted
 #benchb=$allspec2006sorted_highmiddle
-#benchb=464.h264ref
 #benchb="401.bzip2 429.mcf 471.omnetpp 473.astar 482.sphinx3 483.xalancbmk"
 #benchb="450.soplex 464.h264ref"
-
 # benchb=$spec2006_xeon_all
-benchb=$spec2006_xeon_rta13
+# benchb=$spec2006_xeon_rta13
+benchb="434.zeusmp 462.libquantum"
 
-init_system
+echo 8 8 8 8 > /proc/sys/kernel/printk
+echo 2048 > /sys/kernel/debug/tracing/buffer_size_kb
 rmmod memguard
-set_cpus "1 1 1 1"
-# enable_prefetcher >> profile.txt
-# do_init "100,100,100,100"
-corea=$1
 
-[ -z "$corea" ] && error "Usage: $0 <core>"
+insmod memguard.ko
+echo mb 8000 8000 8000 8000 > /sys/kernel/debug/memguard/limit
 
+[ -z "$benchb" ] && error "Usage: $0 <benchmarks>"
+corea=0
 print_sysinfo
-do_experiment
-#do_graph
+do_experiment "$benchb"
+do_graph
 do_print >> profile.txt
 #do_print_stat >> bench.stat
