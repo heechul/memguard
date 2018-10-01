@@ -13,12 +13,9 @@
  **************************************************************************/
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define USE_BWLOCK 0
-
 #define DEBUG(x)
 #define DEBUG_RECLAIM(x)
 #define DEBUG_USER(x)
-#define DEBUG_BWLOCK(x) 
 #define DEBUG_PROFILE(x) x
 
 /**************************************************************************
@@ -124,9 +121,6 @@ struct memguard_info {
 	cpumask_var_t throttle_mask;
 	cpumask_var_t active_mask;
 	atomic_t wsum;
-#if USE_BWLOCK
-	int bwlocked_cores;
-#endif
 	struct hrtimer hr_timer;
 };
 
@@ -139,25 +133,14 @@ static struct core_info __percpu *core_info;
 
 static char *g_hw_type = "";
 static int g_period_us = 1000;
-static int g_use_bwlock = 1;
 static int g_use_exclusive = 0;
 static int g_budget_mb[MAX_NCPUS];
 
 static struct dentry *memguard_dir;
 
-#if USE_BWLOCK
-/* should be defined in the scheduler code */
-static int sysctl_maxperf_bw_mb = 100000;
-static int sysctl_throttle_bw_mb = 100;
-#endif
-
 /**************************************************************************
  * External Function Prototypes
  **************************************************************************/
-#if USE_BWLOCK
-extern int nr_bwlocked_cores(void);
-#endif
-extern void register_get_cpi(int (*func_ptr)(void));
 
 /**************************************************************************
  * Local Function Prototypes
@@ -176,9 +159,6 @@ static void memguard_on_each_cpu_mask(const struct cpumask *mask,
 
 module_param(g_hw_type, charp,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_hw_type, "hardware type");
-
-module_param(g_use_bwlock, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(g_use_bwlock, "enable/disable reclaim");
 
 module_param(g_period_us, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_period_us, "throttling period in usec");
@@ -237,23 +217,6 @@ static void print_core_info(int cpu, struct core_info *cinfo)
 	pr_info("CPU%d: budget: %d, cur_budget: %d, period: %ld\n", 
 	       cpu, cinfo->budget, cinfo->cur_budget, cinfo->period_cnt);
 }
-
-
-#if USE_BWLOCK
-static int mg_nr_bwlocked_cores(void)
-{
-	struct memguard_info *global = &memguard_info;
-	int i;
-	int nr = nr_bwlocked_cores(); /* check running tasks */
-	for_each_cpu(i, global->throttle_mask) {
-		struct task_struct *t = (struct task_struct *)
-			per_cpu_ptr(core_info, i)->throttled_task;
-		if (t && t->bwlock_val > 0)
-			nr += t->bwlock_val;
-	}
-	return nr;
-}
-#endif
 
 /**
  * update per-core usage statistics
@@ -520,23 +483,6 @@ static void period_timer_callback_slave(void *info)
 		target = current;
 	cinfo->throttled_task = NULL;
 
-#if USE_BWLOCK
-	/* bwlock check */
-	if (g_use_bwlock) {
-		if (global->bwlocked_cores > 0) {
-			if (target->bwlock_val > 0)
-				cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
-			else
-				cinfo->limit = convert_mb_to_events(sysctl_throttle_bw_mb);
-		} else {
-			cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
-		}
-	}
-	DEBUG_BWLOCK(trace_printk("%s|bwlock_val %d|g->bwlocked_cores %d\n", 
-				  (current)?current->comm:"null", 
-				  current->bwlock_val, global->bwlocked_cores));
-#endif
-
 	DEBUG(trace_printk("%p|New period %ld. global->budget=%d\n",
 			   cinfo->throttled_task,
 			   cinfo->period_cnt, global->budget));
@@ -597,9 +543,7 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	if (orun > 1)
 		trace_printk("ERR: timer overrun %d at period %ld\n",
 			    orun, new_period);
-#if USE_BWLOCK
-	global->bwlocked_cores = mg_nr_bwlocked_cores();
-#endif
+
 	memguard_on_each_cpu_mask(global->active_mask,
 		period_timer_callback_slave, (void *)new_period, 0);
 
@@ -807,10 +751,6 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 				   i, budget,
 				   convert_events_to_mb(budget));
 	}
-#if USE_BWLOCK
-	struct memguard_info *global = &memguard_info;
-	seq_printf(m, "bwlocked_core: %d\n", global->bwlocked_cores);
-#endif
 
 	put_cpu();
 	return 0;
