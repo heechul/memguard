@@ -145,9 +145,8 @@ static struct core_info __percpu *core_info[MAX_COUNTERS];
 static struct counter_info counters[] = {
 #if HW_TYPE_ARMV7==1
 	{ PERF_TYPE_RAW, 0x17 },     /* L2 line fill */
+	{ PERF_TYPE_RAW, 0x18 }      /* L2 write-back */	
 #elif HW_TYPE_INTEL_SB==1
-	{ PERF_TYPE_RAW, 0x18 }      /* L2 write-back */
-	
 	{ PERF_TYPE_RAW, 0x08b0 }    /* LLC miss, incl prefetch */
 #elif HW_TYPE_INTEL_CORE2==1
 	{ PERF_TYPE_RAW, 0x7024 }    /* LLC miss, incl prefetch */
@@ -878,8 +877,8 @@ static int memguard_init_debugfs(void)
 
 static int throttle_thread(void *arg)
 {
-	int cpunr = (unsigned long)arg;
-	struct core_info *cinfo = per_cpu_ptr(core_info[0], cpunr);
+	int cpunr = smp_processor_id();
+	struct core_info *cinfo = (struct core_info *)arg;
 
 	static const struct sched_param param = {
 		.sched_priority = MAX_USER_RT_PRIO/2,
@@ -940,12 +939,6 @@ int init_module( void )
 
 	get_online_cpus();
 	for_each_online_cpu(i) {
-		/* create and wake-up throttle threads */
-		kthrottle = kthread_create_on_node(throttle_thread,
-										   (void *)((unsigned long)i),
-										   cpu_to_node(i),
-										   "kthrottle/%d", i);
-
 		for (j = 0; j < NELEMS(counters); j++) {
 			struct core_info *cinfo = per_cpu_ptr(core_info[j], i);
 			int budget;
@@ -965,7 +958,6 @@ int init_module( void )
 			memset(cinfo, 0, sizeof(struct core_info));
 
 			/* create performance counter */
-			// for (j = 0; j < NELEMS(counters); j++)
 			cinfo->event = init_counter(i, counters[j].type, counters[j].id, budget);
 
 			if (!cinfo->event)
@@ -999,11 +991,17 @@ int init_module( void )
 			/* initialize nmi irq_work_queue */
 			init_irq_work(&cinfo->pending, memguard_process_overflow);
 
+					/* create and wake-up throttle threads */
+			kthrottle = kthread_create_on_node(throttle_thread,
+											   (void *)cinfo,
+											   cpu_to_node(i),
+											   "kthrottle(%d)/%d", j, i);
+
 			cinfo->throttle_thread = kthrottle;
+			BUG_ON(IS_ERR(kthrottle));
+			kthread_bind(kthrottle, i);
+			wake_up_process(kthrottle);
 		}
-		BUG_ON(IS_ERR(kthrottle));
-		kthread_bind(kthrottle, i);
-		wake_up_process(kthrottle);
 	}
 
 	memguard_init_debugfs();
@@ -1045,7 +1043,7 @@ void cleanup_module( void )
 	for_each_online_cpu(i) {
 		for (j = 0; j < NELEMS(counters); j++) {
 			struct core_info *cinfo = per_cpu_ptr(core_info[j], i);
-			pr_info("Stopping kthrottle/%d\n", i);
+			pr_info("Stopping kthrottle(%d)/%d\n", j, i);
 			cinfo->throttled_task = NULL;
 			kthread_stop(cinfo->throttle_thread);
 
