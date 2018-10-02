@@ -57,7 +57,9 @@
 /**************************************************************************
  * Public Definitions
  **************************************************************************/
-#define MAX_NCPUS 64
+#define MAX_NCPUS 64    /* maximum number of cores */
+#define MAX_COUNTERS 4  /* maximum per-core counters */
+
 #define CACHE_LINE_SIZE 64
 #define BUF_SIZE 256
 #define PREDICTOR 1  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
@@ -139,12 +141,13 @@ struct counter_info {
  * Global Variables
  **************************************************************************/
 static struct memguard_info memguard_info;
-static struct core_info __percpu *core_info;
+static struct core_info __percpu *core_info[MAX_COUNTERS];
 static struct counter_info counters[] = {
 #if HW_TYPE_ARMV7==1
 	{ PERF_TYPE_RAW, 0x17 },     /* L2 line fill */
-	{ PERF_TYPE_RAW, 0x18 }      /* L2 write-back */
 #elif HW_TYPE_INTEL_SB==1
+	{ PERF_TYPE_RAW, 0x18 }      /* L2 write-back */
+	
 	{ PERF_TYPE_RAW, 0x08b0 }    /* LLC miss, incl prefetch */
 #elif HW_TYPE_INTEL_CORE2==1
 	{ PERF_TYPE_RAW, 0x7024 }    /* LLC miss, incl prefetch */
@@ -316,9 +319,15 @@ static void event_overflow_callback(struct perf_event *e,
 				    struct perf_sample_data *data,
 				    struct pt_regs *regs)
 {
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-	BUG_ON(!cinfo);
-	irq_work_queue(&cinfo->pending);
+	int i;
+	for (i = 0; i < NELEMS(counters); i++) { 
+		struct core_info *cinfo = this_cpu_ptr(core_info[i]);
+		if (e == cinfo->event) {
+			irq_work_queue(&cinfo->pending);
+			break;
+		}
+	}
+	trace_printk("ERR: no matching counter exists!\n");
 }
 
 
@@ -327,13 +336,16 @@ static void event_overflow_callback(struct perf_event *e,
  */
 static void __unthrottle_core(void *info)
 {
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-	if (cinfo->throttled_task) {
-		cinfo->exclusive_mode = 1;
-		cinfo->exclusive_time = ktime_get();
+	int i;
+	for (i = 0; i < NELEMS(counters); i++) { 
+		struct core_info *cinfo = this_cpu_ptr(core_info[i]);
+		if (cinfo->throttled_task) {
+			cinfo->exclusive_mode = 1;
+			cinfo->exclusive_time = ktime_get();
 
-		cinfo->throttled_task = NULL;
-		DEBUG_RECLAIM(trace_printk("exclusive mode begin\n"));
+			cinfo->throttled_task = NULL;
+			DEBUG_RECLAIM(trace_printk("exclusive mode begin\n"));
+		}
 	}
 }
 
@@ -467,72 +479,75 @@ static void memguard_process_overflow(struct irq_work *entry)
  */
 static void period_timer_callback_slave(void *info)
 {
-	struct core_info *cinfo = this_cpu_ptr(core_info);
 	struct memguard_info *global = &memguard_info;
 	struct task_struct *target;
 	long new_period = (long)info;
 	int cpu = smp_processor_id();
-
+	int i;
+	
 	/* must be irq disabled. hard irq */
 	BUG_ON(!irqs_disabled());
 	WARN_ON_ONCE(!in_irq());
 
-	if (new_period <= cinfo->period_cnt) {
-		trace_printk("ERR: new_period(%ld) <= cinfo->period_cnt(%ld)\n",
-			     new_period, cinfo->period_cnt);
-		return;
-	}
+	for (i = 0; i < NELEMS(counters); i++) { 	
+		struct core_info *cinfo = this_cpu_ptr(core_info[i]);
 
-	/* assign local period */
-	cinfo->period_cnt = new_period;
+		if (new_period <= cinfo->period_cnt) {
+			trace_printk("ERR: new_period(%ld) <= cinfo->period_cnt(%ld)\n",
+						 new_period, cinfo->period_cnt);
+			continue;
+		}
 
-	/* stop counter */
-	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
+		/* assign local period */
+		cinfo->period_cnt = new_period;
 
-	/* I'm actively participating */
-	cpumask_clear_cpu(cpu, global->throttle_mask);
-	smp_mb();
-	cpumask_set_cpu(cpu, global->active_mask);
+		/* stop counter */
+		cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
 
-	/* unthrottle tasks (if any) */
-	if (cinfo->throttled_task)
-		target = (struct task_struct *)cinfo->throttled_task;
-	else
-		target = current;
-	cinfo->throttled_task = NULL;
+		/* I'm actively participating */
+		cpumask_clear_cpu(cpu, global->throttle_mask);
+		smp_mb();
+		cpumask_set_cpu(cpu, global->active_mask);
 
-	DEBUG(trace_printk("%p|New period %ld. global->budget=%d\n",
-			   cinfo->throttled_task,
-			   cinfo->period_cnt, global->budget));
+		/* unthrottle tasks (if any) */
+		if (cinfo->throttled_task)
+			target = (struct task_struct *)cinfo->throttled_task;
+		else
+			target = current;
+		cinfo->throttled_task = NULL;
+
+		DEBUG(trace_printk("%p|New period %ld.\n", cinfo->throttled_task,
+						   cinfo->period_cnt));
 	
-	/* update statistics. */
-	update_statistics(cinfo);
+		/* update statistics. */
+		update_statistics(cinfo);
 
-	/* new budget assignment from user */
-	if (cinfo->limit > 0) {
-		/* limit mode */
-		cinfo->budget = cinfo->limit;
-	} 
+		/* new budget assignment from user */
+		if (cinfo->limit > 0) {
+			/* limit mode */
+			cinfo->budget = cinfo->limit;
+		} 
 
-	/* budget can't be zero? */
-	cinfo->budget = max(cinfo->budget, 1);
+		/* budget can't be zero? */
+		cinfo->budget = max(cinfo->budget, 1);
 
-	if (cinfo->event->hw.sample_period != cinfo->budget) {
-		/* new budget is assigned */
-		DEBUG(trace_printk("MSG: new budget %d is assigned\n", 
-				   cinfo->budget));
-		cinfo->event->hw.sample_period = cinfo->budget;
+		if (cinfo->event->hw.sample_period != cinfo->budget) {
+			/* new budget is assigned */
+			DEBUG(trace_printk("MSG: new budget %d is assigned\n", 
+							   cinfo->budget));
+			cinfo->event->hw.sample_period = cinfo->budget;
+		}
+
+		/* per-task donation policy */
+		cinfo->cur_budget = cinfo->budget;
+
+		/* setup an interrupt */
+		cinfo->cur_budget = max(1, cinfo->cur_budget);
+		local64_set(&cinfo->event->hw.period_left, cinfo->cur_budget);
+
+		/* enable performance counter */
+		cinfo->event->pmu->start(cinfo->event, PERF_EF_RELOAD);
 	}
-
-	/* per-task donation policy */
-	cinfo->cur_budget = cinfo->budget;
-
-	/* setup an interrupt */
-	cinfo->cur_budget = max(1, cinfo->cur_budget);
-	local64_set(&cinfo->event->hw.period_left, cinfo->cur_budget);
-
-	/* enable performance counter */
-	cinfo->event->pmu->start(cinfo->event, PERF_EF_RELOAD);
 }
 
 /**
@@ -622,14 +637,15 @@ static struct perf_event *init_counter(int cpu, int type, int id, int budget)
 
 static void __disable_counter(void *info)
 {
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-	BUG_ON(!cinfo->event);
-
-	/* stop the counter */
-	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
-	cinfo->event->pmu->del(cinfo->event, 0);
-
-	pr_info("LLC bandwidth throttling disabled\n");
+	int i;
+	for (i = 0; i < NELEMS(counters); i++) {
+		struct core_info *cinfo = this_cpu_ptr(core_info[i]);
+		BUG_ON(!cinfo->event);
+		/* stop the counter */
+		cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
+		cinfo->event->pmu->del(cinfo->event, 0);
+		pr_info("counter[%d] disabled\n", i);
+	}
 }
 
 static void disable_counters(void)
@@ -640,8 +656,11 @@ static void disable_counters(void)
 
 static void __start_counter(void* info)
 {
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-	cinfo->event->pmu->add(cinfo->event, PERF_EF_START);
+	int i;
+	for (i = 0; i < NELEMS(counters); i++) {	
+		struct core_info *cinfo = this_cpu_ptr(core_info[i]);
+		cinfo->event->pmu->add(cinfo->event, PERF_EF_START);
+	}
 }
 
 static void start_counters(void)
@@ -697,7 +716,8 @@ static const struct file_operations memguard_control_fops = {
 
 static void __update_budget(void *info)
 {
-	struct core_info *cinfo = this_cpu_ptr(core_info);
+	// FIXME: add support multiple counters
+	struct core_info *cinfo = this_cpu_ptr(core_info[0]); 
 
 	if ((unsigned long)info == 0) {
 		pr_info("ERR: Requested budget is zero\n");
@@ -759,7 +779,7 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 	seq_printf(m, "-------------------------------\n");
 
 	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
+		struct core_info *cinfo = per_cpu_ptr(core_info[0], i);
 		int budget = 0;
 		if (cinfo->limit > 0)
 			budget = cinfo->limit;
@@ -801,7 +821,7 @@ static int memguard_usage_show(struct seq_file *m, void *v)
 	/* current utilization */
 	for (j = 0; j < 3; j++) {
 		for_each_online_cpu(i) {
-			struct core_info *cinfo = per_cpu_ptr(core_info, i);
+			struct core_info *cinfo = per_cpu_ptr(core_info[0], i);
 			u64 budget, used, util;
 
 			budget = cinfo->budget;
@@ -816,7 +836,7 @@ static int memguard_usage_show(struct seq_file *m, void *v)
 	/* overall utilization
 	   WARN: assume budget did not changed */
 	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
+		struct core_info *cinfo = per_cpu_ptr(core_info[0], i);
 		u64 total_budget, total_used, result;
 
 		total_budget = cinfo->overall.assigned_budget;
@@ -859,7 +879,7 @@ static int memguard_init_debugfs(void)
 static int throttle_thread(void *arg)
 {
 	int cpunr = (unsigned long)arg;
-	struct core_info *cinfo = per_cpu_ptr(core_info, cpunr);
+	struct core_info *cinfo = per_cpu_ptr(core_info[0], cpunr);
 
 	static const struct sched_param param = {
 		.sched_priority = MAX_USER_RT_PRIO/2,
@@ -893,8 +913,9 @@ static int throttle_thread(void *arg)
 
 int init_module( void )
 {
-	int i;
-
+	int i,j;
+	struct task_struct *kthrottle;
+	
 	struct memguard_info *global = &memguard_info;
 
 	/* initialized memguard_info structure */
@@ -914,72 +935,75 @@ int init_module( void )
 	cpumask_copy(global->active_mask, cpu_online_mask);
 	pr_info("HZ=%d, g_period_us=%d\n", HZ, g_period_us);
 	pr_info("Initilizing perf counter\n");
-	core_info = alloc_percpu(struct core_info);
+	for (i = 0; i < NELEMS(counters); i++)
+		core_info[i] = alloc_percpu(struct core_info);
 
 	get_online_cpus();
 	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		int budget;
-
-		if (i >= MAX_NCPUS) {
-			printk(KERN_INFO "too many cores. up to %d is supported\n", MAX_NCPUS);
-			return -ENODEV;
-		}
-		/* initialize counter h/w & event structure */
-		if (g_budget_mb[i] == 0)
-			g_budget_mb[i] = 1000;
-
-		budget = convert_mb_to_events(g_budget_mb[i]);
-		pr_info("budget[%d] = %d (%d MB)\n", i, budget, g_budget_mb[i]);
-
-		/* initialize per-core data structure */
-		memset(cinfo, 0, sizeof(struct core_info));
-
-		/* create performance counter */
-		// for (j = 0; j < NELEMS(counters); j++)
-		cinfo->event = init_counter(i, counters[0].type, counters[0].id, budget);
-
-		if (!cinfo->event)
-			break;
-
-		/* initialize budget */
-		cinfo->budget = cinfo->limit = cinfo->event->hw.sample_period;
-
-		/* throttled task pointer */
-		cinfo->throttled_task = NULL;
-
-		init_waitqueue_head(&cinfo->throttle_evt);
-
-		/* initialize statistics */
-		/* update local period information */
-		cinfo->period_cnt = 0;
-		cinfo->used[0] = cinfo->used[1] = cinfo->used[2] =
-			cinfo->budget; /* initial condition */
-		cinfo->cur_budget = cinfo->budget;
-		cinfo->overall.used_budget = 0;
-		cinfo->overall.assigned_budget = 0;
-		cinfo->overall.throttled_time_ns = 0;
-		cinfo->overall.throttled = 0;
-		cinfo->overall.throttled_error = 0;
-
-		memset(cinfo->overall.throttled_error_dist, 0, sizeof(int)*10);
-		cinfo->throttled_time = ktime_set(0,0);
-
-		print_core_info(smp_processor_id(), cinfo);
-
-		/* initialize nmi irq_work_queue */
-		init_irq_work(&cinfo->pending, memguard_process_overflow);
-
 		/* create and wake-up throttle threads */
-		cinfo->throttle_thread =
-			kthread_create_on_node(throttle_thread,
-					       (void *)((unsigned long)i),
-					       cpu_to_node(i),
-					       "kthrottle/%d", i);
+		kthrottle = kthread_create_on_node(throttle_thread,
+										   (void *)((unsigned long)i),
+										   cpu_to_node(i),
+										   "kthrottle/%d", i);
 
-		BUG_ON(IS_ERR(cinfo->throttle_thread));
-		kthread_bind(cinfo->throttle_thread, i);
-		wake_up_process(cinfo->throttle_thread);
+		for (j = 0; j < NELEMS(counters); j++) {
+			struct core_info *cinfo = per_cpu_ptr(core_info[j], i);
+			int budget;
+
+			if (i >= MAX_NCPUS) {
+				printk(KERN_INFO "too many cores. up to %d is supported\n", MAX_NCPUS);
+				return -ENODEV;
+			}
+			/* initialize counter h/w & event structure */
+			if (g_budget_mb[i] == 0)
+				g_budget_mb[i] = 1000;
+
+			budget = convert_mb_to_events(g_budget_mb[i]);
+			pr_info("budget[%d] = %d (%d MB)\n", i, budget, g_budget_mb[i]);
+
+			/* initialize per-core data structure */
+			memset(cinfo, 0, sizeof(struct core_info));
+
+			/* create performance counter */
+			// for (j = 0; j < NELEMS(counters); j++)
+			cinfo->event = init_counter(i, counters[j].type, counters[j].id, budget);
+
+			if (!cinfo->event)
+				break;
+
+			/* initialize budget */
+			cinfo->budget = cinfo->limit = cinfo->event->hw.sample_period;
+
+			/* throttled task pointer */
+			cinfo->throttled_task = NULL;
+
+			init_waitqueue_head(&cinfo->throttle_evt);
+
+			/* initialize statistics */
+			/* update local period information */
+			cinfo->period_cnt = 0;
+			cinfo->used[0] = cinfo->used[1] = cinfo->used[2] =
+				cinfo->budget; /* initial condition */
+			cinfo->cur_budget = cinfo->budget;
+			cinfo->overall.used_budget = 0;
+			cinfo->overall.assigned_budget = 0;
+			cinfo->overall.throttled_time_ns = 0;
+			cinfo->overall.throttled = 0;
+			cinfo->overall.throttled_error = 0;
+
+			memset(cinfo->overall.throttled_error_dist, 0, sizeof(int)*10);
+			cinfo->throttled_time = ktime_set(0,0);
+
+			print_core_info(smp_processor_id(), cinfo);
+
+			/* initialize nmi irq_work_queue */
+			init_irq_work(&cinfo->pending, memguard_process_overflow);
+
+			cinfo->throttle_thread = kthrottle;
+		}
+		BUG_ON(IS_ERR(kthrottle));
+		kthread_bind(kthrottle, i);
+		wake_up_process(kthrottle);
 	}
 
 	memguard_init_debugfs();
@@ -1004,7 +1028,7 @@ int init_module( void )
 
 void cleanup_module( void )
 {
-	int i;
+	int i,j;
 
 	struct memguard_info *global = &memguard_info;
 
@@ -1019,14 +1043,16 @@ void cleanup_module( void )
 
 	/* destroy perf objects */
 	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
-		pr_info("Stopping kthrottle/%d\n", i);
-		cinfo->throttled_task = NULL;
-		kthread_stop(cinfo->throttle_thread);
+		for (j = 0; j < NELEMS(counters); j++) {
+			struct core_info *cinfo = per_cpu_ptr(core_info[j], i);
+			pr_info("Stopping kthrottle/%d\n", i);
+			cinfo->throttled_task = NULL;
+			kthread_stop(cinfo->throttle_thread);
 
-		perf_event_disable(cinfo->event);
-		perf_event_release_kernel(cinfo->event); 
-		cinfo->event = NULL; 
+			perf_event_disable(cinfo->event);
+			perf_event_release_kernel(cinfo->event); 
+			cinfo->event = NULL;
+		}
 	}
 
 	/* remove debugfs entries */
@@ -1035,7 +1061,9 @@ void cleanup_module( void )
 	/* free allocated data structure */
 	free_cpumask_var(global->throttle_mask);
 	free_cpumask_var(global->active_mask);
-	free_percpu(core_info);
+	for (j = 0; j < NELEMS(counters); j++) {
+		free_percpu(core_info[j]);
+	}
 
 	pr_info("module uninstalled successfully\n");
 	return;
