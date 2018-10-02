@@ -13,6 +13,10 @@
  **************************************************************************/
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#define HW_TYPE_ARMV7 1
+#define HW_TYPE_INTEL_SB 0
+#define HW_TYPE_INTEL_CORE2 0
+
 #define DEBUG(x)
 #define DEBUG_RECLAIM(x)
 #define DEBUG_USER(x)
@@ -63,6 +67,8 @@
 #else
 #  define TM_NS(x) (x).tv64
 #endif
+
+#define NELEMS(x) (sizeof(x) / sizeof((x)[0]))
 
 /**************************************************************************
  * Public Types
@@ -124,14 +130,29 @@ struct memguard_info {
 	struct hrtimer hr_timer;
 };
 
+struct counter_info {
+	int type;    /* counter type: PERF_TYPE_RAW or HARDWARE or SOFTWARE */
+	int id;      /* counter id */
+};
 
 /**************************************************************************
  * Global Variables
  **************************************************************************/
 static struct memguard_info memguard_info;
 static struct core_info __percpu *core_info;
+static struct counter_info counters[] = {
+#if HW_TYPE_ARMV7==1
+	{ PERF_TYPE_RAW, 0x17 },     /* L2 line fill */
+	{ PERF_TYPE_RAW, 0x18 }      /* L2 write-back */
+#elif HW_TYPE_INTEL_SB==1
+	{ PERF_TYPE_RAW, 0x08b0 }    /* LLC miss, incl prefetch */
+#elif HW_TYPE_INTEL_CORE2==1
+	{ PERF_TYPE_RAW, 0x7024 }    /* LLC miss, incl prefetch */
+#else
+	{ PERF_TYPE_HARDWARE, PERF_COUNT_HW_CACHE_MISSES}
+#endif
+};
 
-static char *g_hw_type = "";
 static int g_period_us = 1000;
 static int g_use_exclusive = 0;
 static int g_budget_mb[MAX_NCPUS];
@@ -156,10 +177,6 @@ static void memguard_on_each_cpu_mask(const struct cpumask *mask,
 /**************************************************************************
  * Module parameters
  **************************************************************************/
-
-module_param(g_hw_type, charp,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(g_hw_type, "hardware type");
-
 module_param(g_period_us, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_period_us, "throttling period in usec");
 
@@ -292,7 +309,7 @@ void update_statistics(struct core_info *cinfo)
  * budget is used up. PMU generate an interrupt
  * this run in hardirq, nmi context with irq disabled
  */
-static void event_overflow_callback(struct perf_event *event,
+static void event_overflow_callback(struct perf_event *e,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 2, 0)
 				    int nmi,
 #endif
@@ -345,7 +362,8 @@ static void __newperiod(void *info)
  */
 static void memguard_process_overflow(struct irq_work *entry)
 {
-	struct core_info *cinfo = this_cpu_ptr(core_info);
+	// struct core_info *cinfo = this_cpu_ptr(core_info);
+	struct core_info *cinfo = container_of(entry, struct core_info, pending);
 	struct memguard_info *global = &memguard_info;
 	ktime_t start;
 	s64 budget_used;
@@ -894,10 +912,7 @@ int init_module( void )
 
 	/* initialize all online cpus to be active */
 	cpumask_copy(global->active_mask, cpu_online_mask);
-
-	pr_info("ARCH: %s\n", g_hw_type);
 	pr_info("HZ=%d, g_period_us=%d\n", HZ, g_period_us);
-
 	pr_info("Initilizing perf counter\n");
 	core_info = alloc_percpu(struct core_info);
 
@@ -921,7 +936,9 @@ int init_module( void )
 		memset(cinfo, 0, sizeof(struct core_info));
 
 		/* create performance counter */
-		cinfo->event = init_counter(i, PERF_TYPE_RAW, 0x17, budget);
+		// for (j = 0; j < NELEMS(counters); j++)
+		cinfo->event = init_counter(i, counters[0].type, counters[0].id, budget);
+
 		if (!cinfo->event)
 			break;
 
