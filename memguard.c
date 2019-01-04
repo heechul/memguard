@@ -46,6 +46,10 @@
 #include <linux/kthread.h>
 #include <linux/printk.h>
 #include <linux/interrupt.h>
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 13, 0)
+#  include <linux/sched/types.h>
+#endif
+
 #if LINUX_VERSION_CODE > KERNEL_VERSION(3, 8, 0)
 #  include <linux/sched/rt.h>
 #endif
