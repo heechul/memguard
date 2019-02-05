@@ -885,13 +885,20 @@ static struct perf_event *init_counter(int cpu, int budget, int write)
 	struct perf_event *event = NULL;
 	struct perf_event_attr sched_perf_hw_attr = {
 		/* use generalized hardware abstraction */
-		.type           = PERF_TYPE_HARDWARE,
-		.config         = PERF_COUNT_HW_CACHE_MISSES,
+		//.type           = PERF_TYPE_HARDWARE,
+		//.config         = PERF_COUNT_HW_CACHE_MISSES,
+		.type		= PERF_TYPE_RAW,
+		.config		= 0x17,
 		.size		= sizeof(struct perf_event_attr),
 		.pinned		= 1,
 		.disabled	= 1,
 		.exclude_kernel = 1,   /* TODO: 1 mean, no kernel mode counting */
 	};
+
+	if(write == 1)
+	{
+		sched_perf_hw_attr.config = 0x18;
+	}
 
 	if (!strcmp(g_hw_type, "core2")) {
 		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
@@ -904,10 +911,6 @@ static struct perf_event *init_counter(int cpu, int budget, int write)
 	} else if (!strcmp(g_hw_type, "armv7")) {
 		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
 		sched_perf_hw_attr.config         = 0x17; /* Level 2 data cache refill */
-        if(write == 1)
-        {
-            sched_perf_hw_attr.config = 0x18;
-        }        
 	} else if (!strcmp(g_hw_type, "soft")) {
 		sched_perf_hw_attr.type           = PERF_TYPE_SOFTWARE;
 		sched_perf_hw_attr.config         = PERF_COUNT_SW_CPU_CLOCK;
