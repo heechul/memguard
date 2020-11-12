@@ -1048,7 +1048,11 @@ static int throttle_thread(void *arg)
 		.sched_priority = MAX_USER_RT_PRIO/2,
 	};
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 9, 0)
+	sched_set_fifo(current);
+#else
 	sched_setscheduler(current, SCHED_FIFO, &param);
+#endif
 
 	while (!kthread_should_stop() && cpu_online(cpunr)) {
 
