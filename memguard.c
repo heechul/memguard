@@ -63,7 +63,7 @@
 /**************************************************************************
  * Public Definitions
  **************************************************************************/
-#define MAX_NCPUS 64
+#define MAX_NCPUS CONFIG_NR_CPUS
 #define CACHE_LINE_SIZE 64
 #define BUF_SIZE 256
 #define PREDICTOR 1  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
@@ -1100,6 +1100,7 @@ int init_module( void )
 	/* initialize all online cpus to be active */
 	cpumask_copy(global->active_mask, cpu_online_mask);
 
+	pr_info("MAX_NCPU: %d\n", MAX_NCPUS);
 	pr_info("ARCH: %s\n", g_hw_type);
 	pr_info("HZ=%d, g_period_us=%d\n", HZ, g_period_us);
 
