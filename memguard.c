@@ -1109,13 +1109,16 @@ int init_module( void )
 
 	get_online_cpus();
 	for_each_online_cpu(i) {
-		struct core_info *cinfo = per_cpu_ptr(core_info, i);
+		struct core_info *cinfo;
 		int budget;
 
 		if (i >= MAX_NCPUS) {
 			printk(KERN_INFO "too many cores. up to %d is supported\n", MAX_NCPUS);
 			return -ENODEV;
 		}
+
+		cinfo = per_cpu_ptr(core_info, i);
+
 		/* initialize counter h/w & event structure */
 		if (g_budget_mb[i] == 0)
 			g_budget_mb[i] = 1000;
