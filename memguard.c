@@ -1088,6 +1088,7 @@ int init_module( void )
 	zalloc_cpumask_var(&global->throttle_mask, GFP_NOWAIT);
 	zalloc_cpumask_var(&global->active_mask, GFP_NOWAIT);
 	g_budget_mb = (int *)kmalloc(num_online_cpus()*sizeof(int), GFP_KERNEL);
+
 	if (g_period_us < 0 || g_period_us > 1000000) {
 		printk(KERN_INFO "Must be 0 < period < 1 sec\n");
 		return -ENODEV;
@@ -1114,8 +1115,7 @@ int init_module( void )
 		cinfo = per_cpu_ptr(core_info, i);
 
 		/* initialize counter h/w & event structure */
-		if (g_budget_mb[i] == 0)
-			g_budget_mb[i] = 1000;
+                g_budget_mb[i] = 100000; // no limit
 
 		budget = convert_mb_to_events(g_budget_mb[i]);
 		pr_info("budget[%d] = %d (%d MB)\n", i, budget, g_budget_mb[i]);
