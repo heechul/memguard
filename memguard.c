@@ -63,7 +63,6 @@
 /**************************************************************************
  * Public Definitions
  **************************************************************************/
-#define MAX_NCPUS CONFIG_NR_CPUS
 #define CACHE_LINE_SIZE 64
 #define BUF_SIZE 256
 #define PREDICTOR 1  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
@@ -151,7 +150,7 @@ static char *g_hw_type = "";
 static int g_period_us = 1000;
 static int g_use_bwlock = 1;
 static int g_use_exclusive = 0;
-static int g_budget_mb[MAX_NCPUS];
+static int *g_budget_mb;
 
 static struct dentry *memguard_dir;
 
@@ -1088,7 +1087,7 @@ int init_module( void )
 	memset(global, 0, sizeof(struct memguard_info));
 	zalloc_cpumask_var(&global->throttle_mask, GFP_NOWAIT);
 	zalloc_cpumask_var(&global->active_mask, GFP_NOWAIT);
-
+	g_budget_mb = (int *)kmalloc(num_online_cpus()*sizeof(int), GFP_KERNEL);
 	if (g_period_us < 0 || g_period_us > 1000000) {
 		printk(KERN_INFO "Must be 0 < period < 1 sec\n");
 		return -ENODEV;
@@ -1100,7 +1099,7 @@ int init_module( void )
 	/* initialize all online cpus to be active */
 	cpumask_copy(global->active_mask, cpu_online_mask);
 
-	pr_info("MAX_NCPU: %d\n", MAX_NCPUS);
+	pr_info("NR_CPUS: %d, online: %d\n", NR_CPUS, num_online_cpus());
 	pr_info("ARCH: %s\n", g_hw_type);
 	pr_info("HZ=%d, g_period_us=%d\n", HZ, g_period_us);
 
@@ -1111,11 +1110,6 @@ int init_module( void )
 	for_each_online_cpu(i) {
 		struct core_info *cinfo;
 		int budget;
-
-		if (i >= MAX_NCPUS) {
-			printk(KERN_INFO "too many cores. up to %d is supported\n", MAX_NCPUS);
-			return -ENODEV;
-		}
 
 		cinfo = per_cpu_ptr(core_info, i);
 
@@ -1254,6 +1248,7 @@ void cleanup_module( void )
 	free_cpumask_var(global->throttle_mask);
 	free_cpumask_var(global->active_mask);
 	free_percpu(core_info);
+	kfree(g_budget_mb);
 
 	pr_info("module uninstalled successfully\n");
 	return;
