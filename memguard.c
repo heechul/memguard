@@ -793,7 +793,7 @@ static void __disable_counter(void *info)
 
 	/* stop the counter */
 	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
-	cinfo->event->pmu->del(cinfo->event, 0);
+	// cinfo->event->pmu->del(cinfo->event, 0);
 
 #if USE_RCFS
 	cinfo->cycle_event->pmu->stop(cinfo->cycle_event, PERF_EF_UPDATE);
