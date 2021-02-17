@@ -13,7 +13,6 @@
  **************************************************************************/
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define USE_RCFS   0
 #define USE_BWLOCK 0
 
 #define DEBUG(x)
@@ -21,7 +20,6 @@
 #define DEBUG_USER(x)
 #define DEBUG_BWLOCK(x) 
 #define DEBUG_PROFILE(x) x
-#define DEBUG_RCFS(x) 
 
 /**************************************************************************
  * Included Files
@@ -110,10 +108,7 @@ struct core_info {
 
 	struct irq_work	pending; /* delayed work for NMIs */
 	struct perf_event *event;/* PMC: LLC misses */
-#if USE_RCFS
-	struct perf_event *cycle_event; /* PMC: cycles */
-	struct perf_event *instr_event; /* PMC: retired instructions */
-#endif
+
 	struct task_struct *throttle_thread;  /* forced throttle idle thread */
 	wait_queue_head_t throttle_evt; /* throttle wait queue */
 
@@ -269,39 +264,6 @@ static void print_core_info(int cpu, struct core_info *cinfo)
 	pr_info("CPU%d: budget: %d, cur_budget: %d, period: %ld\n", 
 	       cpu, cinfo->budget, cinfo->cur_budget, cinfo->period_cnt);
 }
-
-#if USE_RCFS
-/* return cpi value of the calling core */
-static int get_cpi(void)
-{
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-	u64 old_val, new_val;
-	u64 delta_cycles, delta_instrs;
-	int wcpi;
-
-	BUG_ON(!cinfo->cycle_event);
-	BUG_ON(!cinfo->instr_event);
-
-	old_val = local64_read(&cinfo->cycle_event->count);
-	cinfo->cycle_event->pmu->stop(cinfo->cycle_event, PERF_EF_UPDATE);
-	new_val = local64_read(&cinfo->cycle_event->count);
-	delta_cycles = new_val - old_val;
-
-	old_val = local64_read(&cinfo->instr_event->count);
-	cinfo->instr_event->pmu->stop(cinfo->instr_event, PERF_EF_UPDATE);
-	new_val = local64_read(&cinfo->instr_event->count);
-	delta_instrs = new_val - old_val;
-	wcpi = (int)div64_u64(delta_cycles * 1024, delta_instrs + 1);
-
-	cinfo->cycle_event->pmu->start(cinfo->cycle_event, 0);
-	cinfo->cycle_event->pmu->start(cinfo->instr_event, 0);
-	
-	DEBUG_RCFS(trace_printk("d_cycle: %lld d_instr: %lld wcpi: %d\n",
-				delta_cycles, delta_instrs, wcpi));
-
-	return wcpi;
-}
-#endif
 
 #if USE_BWLOCK
 static int mg_nr_bwlocked_cores(void)
@@ -671,54 +633,6 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	return HRTIMER_RESTART;
 }
 
-#if USE_RCFS
-static struct perf_event *init_counting_counter(int cpu, int id)
-{
-	struct perf_event *event = NULL;
-	struct perf_event_attr sched_perf_hw_attr = {
-		/* use generalized hardware abstraction */
-		.type           = PERF_TYPE_HARDWARE,
-		.config         = id,
-		.size		= sizeof(struct perf_event_attr),
-		.pinned		= 1,
-		.disabled	= 1,
-		.exclude_kernel = 1,   /* TODO: 1 mean, no kernel mode counting */
-	};
-
-	/* Try to register using hardware perf events */
-	event = perf_event_create_kernel_counter(
-		&sched_perf_hw_attr,
-		cpu, NULL,
-		NULL
-#if LINUX_VERSION_CODE > KERNEL_VERSION(3, 2, 0)
-		,NULL
-#endif
-		);
-
-	if (!event)
-		return NULL;
-
-	if (IS_ERR(event)) {
-		/* vary the KERN level based on the returned errno */
-		if (PTR_ERR(event) == -EOPNOTSUPP)
-			pr_info("cpu%d. not supported\n", cpu);
-		else if (PTR_ERR(event) == -ENOENT)
-			pr_info("cpu%d. not h/w event\n", cpu);
-		else
-			pr_err("cpu%d. unable to create perf event: %ld\n",
-			       cpu, PTR_ERR(event));
-		return NULL;
-	}
-
-	/* This is needed since 4.1? */
-	perf_event_enable(event);
-	
-	/* success path */
-	pr_info("cpu%d enabled counter type %d.\n", cpu, (int)id);
-
-	return event;
-}
-#endif /* RCFS */
 
 static struct perf_event *init_counter(int cpu, int budget)
 {
@@ -726,7 +640,7 @@ static struct perf_event *init_counter(int cpu, int budget)
 	struct perf_event_attr sched_perf_hw_attr = {
 		/* use generalized hardware abstraction */
 		.type           = PERF_TYPE_HARDWARE,
-		.config         = PERF_COUNT_HW_CACHE_MISSES,
+		.config         = PERF_COUNT_HW_CACHE_MISSES,  // intel=0x412e,amd=0x077e
 		.size		= sizeof(struct perf_event_attr),
 		.pinned		= 1,
 		.disabled	= 1,
@@ -741,6 +655,9 @@ static struct perf_event *init_counter(int cpu, int budget)
 	} else if (!strcmp(g_hw_type, "snb")) {
 		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
 		sched_perf_hw_attr.config         = 0x08b0; /* 08b0 - incl. prefetch */
+	} else if (!strcmp(g_hw_type, "zen")) {
+		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
+		sched_perf_hw_attr.config         = 0x037E; /* L2 cache misses */
 	} else if (!strcmp(g_hw_type, "armv7")) {
 		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
 		sched_perf_hw_attr.config         = 0x17; /* Level 2 data cache refill */
@@ -795,14 +712,6 @@ static void __disable_counter(void *info)
 	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
 	cinfo->event->pmu->del(cinfo->event, 0);
 
-#if USE_RCFS
-	cinfo->cycle_event->pmu->stop(cinfo->cycle_event, PERF_EF_UPDATE);
-	cinfo->cycle_event->pmu->del(cinfo->cycle_event, 0);
-
-	cinfo->instr_event->pmu->stop(cinfo->instr_event, PERF_EF_UPDATE);
-	cinfo->instr_event->pmu->del(cinfo->instr_event, 0);
-#endif
-
 	pr_info("LLC bandwidth throttling disabled\n");
 }
 
@@ -816,10 +725,6 @@ static void __start_counter(void* info)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
 	cinfo->event->pmu->add(cinfo->event, PERF_EF_START);
-#if USE_RCFS
-	cinfo->cycle_event->pmu->add(cinfo->cycle_event, PERF_EF_START);
-	cinfo->instr_event->pmu->add(cinfo->instr_event, PERF_EF_START);
-#endif
 }
 
 static void start_counters(void)
@@ -1043,13 +948,13 @@ static int throttle_thread(void *arg)
 	int cpunr = (unsigned long)arg;
 	struct core_info *cinfo = per_cpu_ptr(core_info, cpunr);
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 9, 0)
+	sched_set_fifo(current);
+#else
 	static const struct sched_param param = {
 		.sched_priority = MAX_USER_RT_PRIO/2,
 	};
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 9, 0)
-	sched_set_fifo(current);
-#else
 	sched_setscheduler(current, SCHED_FIFO, &param);
 #endif
 
@@ -1131,18 +1036,6 @@ int init_module( void )
 		/* initialize budget */
 		cinfo->budget = cinfo->limit = cinfo->event->hw.sample_period;
 
-
-#if USE_RCFS
-		/* create cpi events */
-		cinfo->cycle_event = init_counting_counter(i, PERF_COUNT_HW_CPU_CYCLES);
-		if (!cinfo->cycle_event)
-			break;
-
-		cinfo->instr_event = init_counting_counter(i, PERF_COUNT_HW_INSTRUCTIONS);
-		if (!cinfo->instr_event)
-			break;
-#endif
-
 		/* throttled task pointer */
 		cinfo->throttled_task = NULL;
 
@@ -1184,7 +1077,7 @@ int init_module( void )
 
 	pr_info("Start event counters\n");
 	start_counters();
-
+	
 	pr_info("Start period timer (period=%lld us)\n",
 		div64_u64(TM_NS(global->period_in_ktime), 1000));
 
@@ -1197,11 +1090,6 @@ int init_module( void )
 		      HRTIMER_MODE_REL_PINNED);
 	put_cpu();
 
-#if USE_RCFS
-	/* register cpi function */
-	register_get_cpi(&get_cpi);
-#endif
-
 	return 0;
 }
 
@@ -1211,10 +1099,6 @@ void cleanup_module( void )
 
 	struct memguard_info *global = &memguard_info;
 
-#if USE_RCFS
-	/* unregister cpi function */
-	register_get_cpi(NULL);
-#endif
 	get_online_cpus();
 
 	/* unregister sched-tick callback */
@@ -1234,11 +1118,6 @@ void cleanup_module( void )
 		perf_event_disable(cinfo->event);
 		perf_event_release_kernel(cinfo->event); 
 		cinfo->event = NULL; 
-#if USE_RCFS
-		perf_event_release_kernel(cinfo->cycle_event);
-		perf_event_release_kernel(cinfo->instr_event);
-		cinfo->cycle_event = cinfo->instr_event = NULL;
-#endif
 	}
 
 	/* remove debugfs entries */
