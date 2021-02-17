@@ -522,17 +522,24 @@ static void period_timer_callback_slave(void *info)
 	BUG_ON(!irqs_disabled());
 	WARN_ON_ONCE(!in_irq());
 
-	if (new_period <= cinfo->period_cnt) {
+	if (unlikely(cinfo->period_cnt >= new_period)) {
+		/* new period <= current period */
 		trace_printk("ERR: new_period(%ld) <= cinfo->period_cnt(%ld)\n",
 			     new_period, cinfo->period_cnt);
 		return;
+	} else if (unlikely(cinfo->period_cnt < 0)) {
+		/* module is being unloaded */
+		return;
+	} else if (unlikely(cinfo->period_cnt == 0)) {
+		/* first time */
+		cinfo->event->pmu->add(cinfo->event, PERF_EF_START);
 	}
-
-	/* assign local period */
-	cinfo->period_cnt = new_period;
 
 	/* stop counter */
 	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
+
+	/* assign local period */
+	cinfo->period_cnt = new_period;
 
 	/* I'm actively participating */
 	cpumask_clear_cpu(cpu, global->throttle_mask);
@@ -708,11 +715,13 @@ static void __disable_counter(void *info)
 	struct core_info *cinfo = this_cpu_ptr(core_info);
 	BUG_ON(!cinfo->event);
 
+	/* stop the kthrottle/i */
+	cinfo->throttled_task = NULL;
+	cinfo->period_cnt = -1; // done
+
 	/* stop the counter */
 	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
 	cinfo->event->pmu->del(cinfo->event, 0);
-
-	pr_info("LLC bandwidth throttling disabled\n");
 }
 
 static void disable_counters(void)
@@ -720,17 +729,6 @@ static void disable_counters(void)
 	on_each_cpu(__disable_counter, NULL, 0);
 }
 
-
-static void __start_counter(void* info)
-{
-	struct core_info *cinfo = this_cpu_ptr(core_info);
-	cinfo->event->pmu->add(cinfo->event, PERF_EF_START);
-}
-
-static void start_counters(void)
-{
-	on_each_cpu(__start_counter, NULL, 0);
-}
 
 /**************************************************************************
  * Local Functions
@@ -1075,8 +1073,8 @@ int init_module( void )
 
 	memguard_init_debugfs();
 
-	pr_info("Start event counters\n");
-	start_counters();
+	/* pr_info("Start event counters\n"); */
+	/* start_counters(); */
 	
 	pr_info("Start period timer (period=%lld us)\n",
 		div64_u64(TM_NS(global->period_in_ktime), 1000));
@@ -1102,19 +1100,18 @@ void cleanup_module( void )
 	get_online_cpus();
 
 	/* unregister sched-tick callback */
-	pr_info("Cancel timer\n");
 	hrtimer_cancel(&global->hr_timer);
+	pr_info("Cancel timer\n");
 
 	/* stop perf_event counters */
 	disable_counters();
+	pr_info("LLC bandwidth throttling disabled\n");
 
 	/* destroy perf objects */
 	for_each_online_cpu(i) {
 		struct core_info *cinfo = per_cpu_ptr(core_info, i);
 		pr_info("Stopping kthrottle/%d\n", i);
-		cinfo->throttled_task = NULL;
 		kthread_stop(cinfo->throttle_thread);
-
 		perf_event_disable(cinfo->event);
 		perf_event_release_kernel(cinfo->event); 
 		cinfo->event = NULL; 
