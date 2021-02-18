@@ -398,7 +398,8 @@ static void __newperiod(void *info)
 				       0, HRTIMER_MODE_ABS_PINNED);
 		DEBUG(trace_printk("begin new period\n"));
 
-		on_each_cpu(period_timer_callback_slave, (void *)new_period, 0);
+		memguard_on_each_cpu_mask(global->active_mask,
+                                     period_timer_callback_slave, (void *)new_period, 0);
 	} 
 }
 
@@ -530,9 +531,6 @@ static void period_timer_callback_slave(void *info)
 	} else if (unlikely(cinfo->period_cnt < 0)) {
 		/* module is being unloaded */
 		return;
-	} else if (unlikely(cinfo->period_cnt == 0)) {
-		/* first time */
-		cinfo->event->pmu->add(cinfo->event, PERF_EF_START);
 	}
 
 	/* stop counter */
@@ -721,12 +719,12 @@ static void __disable_counter(void *info)
 
 	/* stop the counter */
 	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
-	cinfo->event->pmu->del(cinfo->event, 0);
 }
 
 static void disable_counters(void)
 {
-	on_each_cpu(__disable_counter, NULL, 0);
+	struct memguard_info *global = &memguard_info;
+	memguard_on_each_cpu_mask(global->active_mask, __disable_counter, NULL, 0);
 }
 
 
