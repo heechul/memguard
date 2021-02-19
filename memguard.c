@@ -178,8 +178,12 @@ static void memguard_on_each_cpu_mask(const struct cpumask *mask,
  * Module parameters
  **************************************************************************/
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 10, 0)
 module_param(g_hw_counter_id, hexint,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(g_hw_type, "raw hardware counter number (hex)");
+#else
+module_param(g_hw_counter_id, int,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+#endif
+MODULE_PARM_DESC(g_hw_type, "raw hardware counter number");
 
 module_param(g_use_bwlock, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_use_bwlock, "enable/disable reclaim");
@@ -626,7 +630,7 @@ static struct perf_event *init_counter(int cpu, int budget)
 	struct perf_event_attr sched_perf_hw_attr = {
 		/* use generalized hardware abstraction */
 		.type           = PERF_TYPE_HARDWARE,
-		.config         = PERF_COUNT_HW_CACHE_MISSES,  // intel=0x412e,amd=0x077e
+		.config         = PERF_COUNT_HW_CACHE_MISSES,
 		.size		= sizeof(struct perf_event_attr),
 		.pinned		= 1,
 		.disabled	= 1,
@@ -639,7 +643,7 @@ static struct perf_event *init_counter(int cpu, int budget)
 
 		   intel  0x7024   ??
 		          0x08b0   ??
-			  0x412e   PERF_COUNT_HW_CACHE_MISSES)
+			  0x412e   PERF_COUNT_HW_CACHE_MISSES
 
 		   ARM    0x17     L2 data cache refill
 
