@@ -141,36 +141,14 @@ struct memguard_info {
 static struct memguard_info memguard_info;
 static struct core_info __percpu *core_info;
 
-static char *g_hw_type = "";
 static int g_period_us = 1000;
-static int g_use_bwlock = 1;
+static int g_use_bwlock = 0;
 static int g_use_exclusive = 0;
 static int *g_budget_mb;
 
+static int g_hw_counter_id = -1;
+
 static struct dentry *memguard_dir;
-
-/* copied from kernel/sched/sched.h */
-static const int prio_to_weight[40] = {
- /* -20 */     88761,     71755,     56483,     46273,     36291,
- /* -15 */     29154,     23254,     18705,     14949,     11916,
- /* -10 */      9548,      7620,      6100,      4904,      3906,
- /*  -5 */      3121,      2501,      1991,      1586,      1277,
- /*   0 */      1024,       820,       655,       526,       423,
- /*   5 */       335,       272,       215,       172,       137,
- /*  10 */       110,        87,        70,        56,        45,
- /*  15 */        36,        29,        23,        18,        15,
-};
-
-static const u32 prio_to_wmult[40] = {
- /* -20 */     48388,     59856,     76040,     92818,    118348,
- /* -15 */    147320,    184698,    229616,    287308,    360437,
- /* -10 */    449829,    563644,    704093,    875809,   1099582,
- /*  -5 */   1376151,   1717300,   2157191,   2708050,   3363326,
- /*   0 */   4194304,   5237765,   6557202,   8165337,  10153587,
- /*   5 */  12820798,  15790321,  19976592,  24970740,  31350126,
- /*  10 */  39045157,  49367440,  61356676,  76695844,  95443717,
- /*  15 */ 119304647, 148102320, 186737708, 238609294, 286331153,
-};
 
 #if USE_BWLOCK
 /* should be defined in the scheduler code */
@@ -184,7 +162,6 @@ static int sysctl_throttle_bw_mb = 100;
 #if USE_BWLOCK
 extern int nr_bwlocked_cores(void);
 #endif
-extern void register_get_cpi(int (*func_ptr)(void));
 
 /**************************************************************************
  * Local Function Prototypes
@@ -201,8 +178,8 @@ static void memguard_on_each_cpu_mask(const struct cpumask *mask,
  * Module parameters
  **************************************************************************/
 
-module_param(g_hw_type, charp,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(g_hw_type, "hardware type");
+module_param(g_hw_counter_id, hexint,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(g_hw_type, "raw hardware counter number (hex)");
 
 module_param(g_use_bwlock, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_use_bwlock, "enable/disable reclaim");
@@ -439,10 +416,12 @@ static void memguard_process_overflow(struct irq_work *entry)
 
 	if (!cpumask_test_cpu(smp_processor_id(), global->active_mask)) {
 		trace_printk("ERR: not active\n");
+		cinfo->throttled_task = NULL;
 		return;
 	} else if (global->period_cnt != cinfo->period_cnt) {
 		trace_printk("ERR: global(%ld) != local(%ld) period mismatch\n",
 			     global->period_cnt, cinfo->period_cnt);
+		cinfo->throttled_task = NULL;
 		return;
 	}
 
@@ -492,7 +471,7 @@ static void memguard_process_overflow(struct irq_work *entry)
 	cinfo->throttled_task = current;
 	cinfo->throttled_time = start;
 
-	WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
+	// WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
 	wake_up_interruptible(&cinfo->throttle_evt);
 }
 
@@ -521,15 +500,17 @@ static void period_timer_callback_slave(void *info)
 
 	/* must be irq disabled. hard irq */
 	BUG_ON(!irqs_disabled());
-	WARN_ON_ONCE(!in_irq());
+	// WARN_ON_ONCE(!in_interrupt());
 
 	if (unlikely(cinfo->period_cnt >= new_period)) {
 		/* new period <= current period */
 		trace_printk("ERR: new_period(%ld) <= cinfo->period_cnt(%ld)\n",
 			     new_period, cinfo->period_cnt);
+		cinfo->throttled_task = NULL;
 		return;
 	} else if (unlikely(cinfo->period_cnt < 0)) {
 		/* module is being unloaded */
+		cinfo->throttled_task = NULL;
 		return;
 	}
 
@@ -652,24 +633,22 @@ static struct perf_event *init_counter(int cpu, int budget)
 		.exclude_kernel = 1,   /* TODO: 1 mean, no kernel mode counting */
 	};
 
-	if (!strcmp(g_hw_type, "core2")) {
+	if (g_hw_counter_id >= 0) {
+		/*
+		   known counters for architecture/platforms
+
+		   intel  0x7024   ??
+		          0x08b0   ??
+			  0x412e   PERF_COUNT_HW_CACHE_MISSES)
+
+		   ARM    0x17     L2 data cache refill
+
+		   AMD    ???      ???
+
+		 */
 		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
-		sched_perf_hw_attr.config         = 0x7024; /* 7024 - incl. prefetch 
-							       5024 - only prefetch
-							       4024 - excl. prefetch */
-	} else if (!strcmp(g_hw_type, "snb")) {
-		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
-		sched_perf_hw_attr.config         = 0x08b0; /* 08b0 - incl. prefetch */
-	} else if (!strcmp(g_hw_type, "zen")) {
-		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
-		sched_perf_hw_attr.config         = 0x037E; /* L2 cache misses */
-	} else if (!strcmp(g_hw_type, "armv7")) {
-		sched_perf_hw_attr.type           = PERF_TYPE_RAW;
-		sched_perf_hw_attr.config         = 0x17; /* Level 2 data cache refill */
-	} else if (!strcmp(g_hw_type, "soft")) {
-		sched_perf_hw_attr.type           = PERF_TYPE_SOFTWARE;
-		sched_perf_hw_attr.config         = PERF_COUNT_SW_CPU_CLOCK;
-	} 
+		sched_perf_hw_attr.config         = g_hw_counter_id;
+	}
 
 	/* select based on requested event type */
 	sched_perf_hw_attr.sample_period = budget;
@@ -699,9 +678,6 @@ static struct perf_event *init_counter(int cpu, int budget)
 		return NULL;
 	}
 
-	/* This is needed since 4.1? */
-	perf_event_enable(event);
-
 	/* success path */
 	pr_info("cpu%d enabled counter.\n", cpu);
 
@@ -723,8 +699,7 @@ static void __disable_counter(void *info)
 
 static void disable_counters(void)
 {
-	struct memguard_info *global = &memguard_info;
-	memguard_on_each_cpu_mask(global->active_mask, __disable_counter, NULL, 0);
+	on_each_cpu(__disable_counter, NULL, 0);
 }
 
 
@@ -1002,7 +977,7 @@ int init_module( void )
 	cpumask_copy(global->active_mask, cpu_online_mask);
 
 	pr_info("NR_CPUS: %d, online: %d\n", NR_CPUS, num_online_cpus());
-	pr_info("ARCH: %s\n", g_hw_type);
+	if (g_hw_counter_id >= 0) pr_info("RAW HW COUNTER ID: 0x%x\n", g_hw_counter_id);
 	pr_info("HZ=%d, g_period_us=%d\n", HZ, g_period_us);
 
 	pr_info("Initilizing perf counter\n");
@@ -1064,6 +1039,8 @@ int init_module( void )
 					       cpu_to_node(i),
 					       "kthrottle/%d", i);
 
+		perf_event_enable(cinfo->event);
+
 		BUG_ON(IS_ERR(cinfo->throttle_thread));
 		kthread_bind(cinfo->throttle_thread, i);
 		wake_up_process(cinfo->throttle_thread);
@@ -1071,9 +1048,6 @@ int init_module( void )
 
 	memguard_init_debugfs();
 
-	/* pr_info("Start event counters\n"); */
-	/* start_counters(); */
-	
 	pr_info("Start period timer (period=%lld us)\n",
 		div64_u64(TM_NS(global->period_in_ktime), 1000));
 
