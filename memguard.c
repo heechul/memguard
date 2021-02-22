@@ -13,12 +13,9 @@
  **************************************************************************/
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define USE_BWLOCK 0
-
 #define DEBUG(x)
 #define DEBUG_RECLAIM(x)
 #define DEBUG_USER(x)
-#define DEBUG_BWLOCK(x) 
 #define DEBUG_PROFILE(x) x
 
 /**************************************************************************
@@ -116,22 +113,15 @@ struct core_info {
 	struct memstat overall;  /* stat for overall periods. reset by user */
 	int used[3];             /* EWMA memory load */
 	long period_cnt;         /* active periods count */
+	struct hrtimer hr_timer;
 };
 
 /* global info */
 struct memguard_info {
-	int master;
 	ktime_t period_in_ktime;
-	ktime_t cur_period_start;
-	int start_tick;
-	long period_cnt;
 	cpumask_var_t throttle_mask;
 	cpumask_var_t active_mask;
 	atomic_t wsum;
-#if USE_BWLOCK
-	int bwlocked_cores;
-#endif
-	struct hrtimer hr_timer;
 };
 
 
@@ -150,23 +140,15 @@ static int g_hw_counter_id = -1;
 
 static struct dentry *memguard_dir;
 
-#if USE_BWLOCK
-/* should be defined in the scheduler code */
-static int sysctl_maxperf_bw_mb = 100000;
-static int sysctl_throttle_bw_mb = 100;
-#endif
 
 /**************************************************************************
  * External Function Prototypes
  **************************************************************************/
-#if USE_BWLOCK
-extern int nr_bwlocked_cores(void);
-#endif
 
 /**************************************************************************
  * Local Function Prototypes
  **************************************************************************/
-static void period_timer_callback_slave(void *info);
+static void period_timer_callback_slave(struct core_info *cinfo);
 enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer);
 static void memguard_process_overflow(struct irq_work *entry);
 static int throttle_thread(void *arg);
@@ -245,22 +227,6 @@ static void print_core_info(int cpu, struct core_info *cinfo)
 	pr_info("CPU%d: budget: %d, cur_budget: %d, period: %ld\n", 
 	       cpu, cinfo->budget, cinfo->cur_budget, cinfo->period_cnt);
 }
-
-#if USE_BWLOCK
-static int mg_nr_bwlocked_cores(void)
-{
-	struct memguard_info *global = &memguard_info;
-	int i;
-	int nr = nr_bwlocked_cores(); /* check running tasks */
-	for_each_cpu(i, global->throttle_mask) {
-		struct task_struct *t = (struct task_struct *)
-			per_cpu_ptr(core_info, i)->throttled_task;
-		if (t && t->bwlock_val > 0)
-			nr += t->bwlock_val;
-	}
-	return nr;
-}
-#endif
 
 /**
  * update per-core usage statistics
@@ -366,22 +332,18 @@ static void __unthrottle_core(void *info)
 
 static void __newperiod(void *info)
 {
-	long period = (long)info;
 	ktime_t start = ktime_get();
 	struct memguard_info *global = &memguard_info;
+	struct core_info *cinfo = this_cpu_ptr(core_info);
 	
-	if (period == global->period_cnt) {
-		ktime_t new_expire = ktime_add(start, global->period_in_ktime);
-		long new_period = ++global->period_cnt;
+	ktime_t new_expire = ktime_add(start, global->period_in_ktime);
 
-		/* arrived before timer interrupt is called */
-		hrtimer_start_range_ns(&global->hr_timer, new_expire,
-				       0, HRTIMER_MODE_ABS_PINNED);
-		DEBUG(trace_printk("begin new period\n"));
+	/* arrived before timer interrupt is called */
+	hrtimer_start_range_ns(&cinfo->hr_timer, new_expire,
+			       0, HRTIMER_MODE_ABS_PINNED);
 
-		memguard_on_each_cpu_mask(global->active_mask,
-                                     period_timer_callback_slave, (void *)new_period, 0);
-	} 
+	DEBUG(trace_printk("begin new period\n"));
+	period_timer_callback_slave(cinfo);
 }
 
 /**
@@ -423,13 +385,6 @@ static void memguard_process_overflow(struct irq_work *entry)
 		cinfo->throttled_task = NULL;
 		return;
 	}
-	if (global->period_cnt != cinfo->period_cnt) {
-		trace_printk("ERR: global(%ld) != local(%ld) period mismatch\n",
-			     global->period_cnt, cinfo->period_cnt);
-		cinfo->throttled_task = NULL;
-		return;
-	}
-
 	/* we are going to be throttled */
 	cpumask_set_cpu(smp_processor_id(), global->throttle_mask);
 	smp_mb(); // w -> r ordering of the local cpu.
@@ -446,8 +401,8 @@ static void memguard_process_overflow(struct irq_work *entry)
 			memguard_on_each_cpu_mask(global->throttle_mask, __unthrottle_core, NULL, 0);
 			return;
 		} else if (g_use_exclusive == 5) {
-			smp_call_function_single(global->master, __newperiod, 
-					  (void *)cinfo->period_cnt, 0);
+			/* algorithm 5: begin a new period */
+			memguard_on_each_cpu_mask(global->active_mask, __newperiod, NULL, 0);
 			return;
 		} else if (g_use_exclusive > 5) {
 			trace_printk("ERR: Unsupported exclusive mode %d\n", 
@@ -476,50 +431,55 @@ static void memguard_process_overflow(struct irq_work *entry)
 	wake_up_interruptible(&cinfo->throttle_evt);
 }
 
-/**
- * per-core period processing
- *
- * called by scheduler tick to replenish budget and unthrottle if needed
- * run in interrupt context (irq disabled)
- */
 
-/*
+/**
+ * per-core period timer callback
+ *
+ *   called while cpu_base->lock is held by hrtimer_interrupt()
+ *
+ */
+enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
+{
+	struct core_info *cinfo = this_cpu_ptr(core_info);
+	struct memguard_info *global = &memguard_info;
+	int orun;
+
+	/* must be irq disabled. hard irq */
+	BUG_ON(!irqs_disabled());
+	// WARN_ON_ONCE(!in_interrupt());
+
+	/* stop counter */
+	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
+
+	/* forward timer */
+	orun = hrtimer_forward_now(timer, global->period_in_ktime);
+	BUG_ON(orun == 0);
+	if (orun > 1)
+		trace_printk("ERR: timer overrun %d at period %ld\n",
+			    orun, cinfo->period_cnt);
+
+	/* assign local period */
+	cinfo->period_cnt += orun;
+
+	period_timer_callback_slave(cinfo);
+
+	return HRTIMER_RESTART;
+}
+
+/**
  * period_timer algorithm:
  *	excess = 0;
  *	if predict < budget:
  *	   excess = budget - predict;
  *	   global += excess
  *	set interrupt at (budget - excess)
+ *
  */
-static void period_timer_callback_slave(void *info)
+static void period_timer_callback_slave(struct core_info *cinfo)
 {
-	struct core_info *cinfo = this_cpu_ptr(core_info);
 	struct memguard_info *global = &memguard_info;
 	struct task_struct *target;
-	long new_period = (long)info;
 	int cpu = smp_processor_id();
-
-	/* must be irq disabled. hard irq */
-	BUG_ON(!irqs_disabled());
-	// WARN_ON_ONCE(!in_interrupt());
-
-	if (unlikely(cinfo->period_cnt >= new_period)) {
-		/* new period <= current period */
-		trace_printk("ERR: new_period(%ld) <= cinfo->period_cnt(%ld)\n",
-			     new_period, cinfo->period_cnt);
-		cinfo->throttled_task = NULL;
-		return;
-	} else if (unlikely(cinfo->period_cnt < 0)) {
-		/* module is being unloaded */
-		cinfo->throttled_task = NULL;
-		return;
-	}
-
-	/* stop counter */
-	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
-
-	/* assign local period */
-	cinfo->period_cnt = new_period;
 
 	/* I'm actively participating */
 	cpumask_clear_cpu(cpu, global->throttle_mask);
@@ -532,23 +492,6 @@ static void period_timer_callback_slave(void *info)
 	else
 		target = current;
 	cinfo->throttled_task = NULL;
-
-#if USE_BWLOCK
-	/* bwlock check */
-	if (g_use_bwlock) {
-		if (global->bwlocked_cores > 0) {
-			if (target->bwlock_val > 0)
-				cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
-			else
-				cinfo->limit = convert_mb_to_events(sysctl_throttle_bw_mb);
-		} else {
-			cinfo->limit = convert_mb_to_events(sysctl_maxperf_bw_mb);
-		}
-	}
-	DEBUG_BWLOCK(trace_printk("%s|bwlock_val %d|g->bwlocked_cores %d\n", 
-				  (current)?current->comm:"null", 
-				  current->bwlock_val, global->bwlocked_cores));
-#endif
 
 	DEBUG(trace_printk("%p|New period %ld. global->budget=%d\n",
 			   cinfo->throttled_task,
@@ -583,46 +526,6 @@ static void period_timer_callback_slave(void *info)
 	/* enable performance counter */
 	cinfo->event->pmu->start(cinfo->event, PERF_EF_RELOAD);
 }
-
-/**
- *   called while cpu_base->lock is held by hrtimer_interrupt()
- */
-enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
-{
-	struct memguard_info *global = &memguard_info;
-
-	ktime_t now;
-	int orun;
-	long new_period;
-
-	DEBUG_PROFILE(trace_printk("master begin\n"));
-	BUG_ON(smp_processor_id() != global->master);
-
-	now = timer->base->get_time();
-	orun = hrtimer_forward(timer, now, global->period_in_ktime);
-
-	WARN_ON(orun != 1);
-
-	if (orun == 0)
-		return HRTIMER_RESTART;
-	if (orun > 1)
-		trace_printk("ERR: timer overrun %d at period %ld\n",
-			    orun, global->period_cnt);
-
-	global->cur_period_start = now;
-	global->period_cnt += orun;
-	new_period = global->period_cnt;
-
-#if USE_BWLOCK
-	global->bwlocked_cores = mg_nr_bwlocked_cores();
-#endif
-	memguard_on_each_cpu_mask(global->active_mask,
-		period_timer_callback_slave, (void *)new_period, 0);
-
-	DEBUG_PROFILE(trace_printk("master end\n"));
-	return HRTIMER_RESTART;
-}
-
 
 static struct perf_event *init_counter(int cpu, int budget)
 {
@@ -688,7 +591,29 @@ static struct perf_event *init_counter(int cpu, int budget)
 	return event;
 }
 
-static void __disable_counter(void *info)
+static void __start_counter(void *info)
+{
+	struct memguard_info *global = &memguard_info;
+	struct core_info *cinfo = this_cpu_ptr(core_info);
+	BUG_ON(!cinfo->event);
+
+	/* initialize hr timer */
+        hrtimer_init(&cinfo->hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED);
+        cinfo->hr_timer.function = &period_timer_callback_master;
+
+	/* start timer */
+        hrtimer_start(&cinfo->hr_timer, global->period_in_ktime,
+                      HRTIMER_MODE_REL_PINNED);
+
+	/* initialize */
+	cinfo->throttled_task = NULL;
+	cinfo->period_cnt = 0;
+
+	/* start performance counter */
+	/* cinfo->event->pmu->start(cinfo->event, PERF_EF_RELOAD); */
+}
+
+static void __stop_counter(void *info)
 {
 	struct core_info *cinfo = this_cpu_ptr(core_info);
 	BUG_ON(!cinfo->event);
@@ -699,11 +624,9 @@ static void __disable_counter(void *info)
 
 	/* stop the counter */
 	cinfo->event->pmu->stop(cinfo->event, PERF_EF_UPDATE);
-}
 
-static void disable_counters(void)
-{
-	on_each_cpu(__disable_counter, NULL, 0);
+	/* stop timer */
+	hrtimer_cancel(&cinfo->hr_timer);
 }
 
 
@@ -827,10 +750,6 @@ static int memguard_limit_show(struct seq_file *m, void *v)
 				   i, budget,
 				   convert_events_to_mb(budget));
 	}
-#if USE_BWLOCK
-	struct memguard_info *global = &memguard_info;
-	seq_printf(m, "bwlocked_core: %d\n", global->bwlocked_cores);
-#endif
 
 	put_cpu();
 	return 0;
@@ -974,7 +893,6 @@ int init_module( void )
 		return -ENODEV;
 	}
 
-	global->start_tick = jiffies;
 	global->period_in_ktime = ktime_set(0, g_period_us * 1000);
 
 	/* initialize all online cpus to be active */
@@ -1052,18 +970,12 @@ int init_module( void )
 
 	memguard_init_debugfs();
 
+	/* start timer and perf counters */
 	pr_info("Start period timer (period=%lld us)\n",
 		div64_u64(TM_NS(global->period_in_ktime), 1000));
+	on_each_cpu(__start_counter, NULL, 0);
 
-	get_cpu();
-	global->master = smp_processor_id();
-
-	hrtimer_init(&global->hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED );
-	global->hr_timer.function = &period_timer_callback_master;
-	hrtimer_start(&global->hr_timer, global->period_in_ktime, 
-		      HRTIMER_MODE_REL_PINNED);
-	put_cpu();
-
+	put_online_cpus();
 	return 0;
 }
 
@@ -1075,12 +987,8 @@ void cleanup_module( void )
 
 	get_online_cpus();
 
-	/* unregister sched-tick callback */
-	hrtimer_cancel(&global->hr_timer);
-	pr_info("Cancel timer\n");
-
-	/* stop perf_event counters */
-	disable_counters();
+	/* stop perf_event counters and timers */
+	on_each_cpu(__stop_counter, NULL, 0);
 	pr_info("LLC bandwidth throttling disabled\n");
 
 	/* destroy perf objects */
@@ -1102,6 +1010,7 @@ void cleanup_module( void )
 	free_percpu(core_info);
 	kfree(g_budget_mb);
 
+	put_online_cpus();
 	pr_info("module uninstalled successfully\n");
 	return;
 }
