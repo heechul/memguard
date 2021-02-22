@@ -422,7 +422,8 @@ static void memguard_process_overflow(struct irq_work *entry)
 		trace_printk("ERR: not active\n");
 		cinfo->throttled_task = NULL;
 		return;
-	} else if (global->period_cnt != cinfo->period_cnt) {
+	}
+	if (global->period_cnt != cinfo->period_cnt) {
 		trace_printk("ERR: global(%ld) != local(%ld) period mismatch\n",
 			     global->period_cnt, cinfo->period_cnt);
 		cinfo->throttled_task = NULL;
@@ -442,11 +443,7 @@ static void memguard_process_overflow(struct irq_work *entry)
 			return;
 		} else if (g_use_exclusive == 2) {
 			/* algorithm 2: wakeup all (i.e., non regulation) */
-			smp_call_function_many(global->throttle_mask, __unthrottle_core, NULL, 0);
-			cinfo->exclusive_mode = 1;
-			cinfo->exclusive_time = ktime_get();
-			cinfo->throttled_task = NULL;
-			DEBUG_RECLAIM(trace_printk("exclusive mode begin\n"));
+			memguard_on_each_cpu_mask(global->throttle_mask, __unthrottle_core, NULL, 0);
 			return;
 		} else if (g_use_exclusive == 5) {
 			smp_call_function_single(global->master, __newperiod, 
@@ -598,28 +595,31 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	int orun;
 	long new_period;
 
-	now = timer->base->get_time();
-	global->cur_period_start = now;
-        DEBUG(trace_printk("master begin\n"));
+	DEBUG_PROFILE(trace_printk("master begin\n"));
 	BUG_ON(smp_processor_id() != global->master);
 
+	now = timer->base->get_time();
 	orun = hrtimer_forward(timer, now, global->period_in_ktime);
+
+	WARN_ON(orun != 1);
+
 	if (orun == 0)
 		return HRTIMER_RESTART;
+	if (orun > 1)
+		trace_printk("ERR: timer overrun %d at period %ld\n",
+			    orun, global->period_cnt);
 
+	global->cur_period_start = now;
 	global->period_cnt += orun;
 	new_period = global->period_cnt;
 
-	if (orun > 1)
-		trace_printk("ERR: timer overrun %d at period %ld\n",
-			    orun, new_period);
 #if USE_BWLOCK
 	global->bwlocked_cores = mg_nr_bwlocked_cores();
 #endif
 	memguard_on_each_cpu_mask(global->active_mask,
 		period_timer_callback_slave, (void *)new_period, 0);
 
-	DEBUG(trace_printk("master end\n"));
+	DEBUG_PROFILE(trace_printk("master end\n"));
 	return HRTIMER_RESTART;
 }
 
