@@ -112,7 +112,7 @@ struct core_info {
 	/* statistics */
 	struct memstat overall;  /* stat for overall periods. reset by user */
 	int used[3];             /* EWMA memory load */
-	long period_cnt;         /* active periods count */
+	int64_t period_cnt;         /* active periods count */
 	struct hrtimer hr_timer;
 };
 
@@ -225,7 +225,7 @@ static inline u64 memguard_event_used(struct core_info *cinfo)
 static void print_core_info(int cpu, struct core_info *cinfo)
 {
 	pr_info("CPU%d: budget: %d, cur_budget: %d, period: %ld\n", 
-	       cpu, cinfo->budget, cinfo->cur_budget, cinfo->period_cnt);
+		cpu, cinfo->budget, cinfo->cur_budget, (long)cinfo->period_cnt);
 }
 
 /**
@@ -290,11 +290,11 @@ void update_statistics(struct core_info *cinfo)
 		cinfo->overall.exclusive++;
 	}
 	DEBUG_PROFILE(trace_printk("%lld %d %p CPU%d org: %d cur: %d period: %ld\n",
-			   new, used, cinfo->throttled_task,
-			   smp_processor_id(), 
-			   cinfo->budget,
-			   cinfo->cur_budget,
-			   cinfo->period_cnt));
+				   new, used, cinfo->throttled_task,
+				   smp_processor_id(), 
+				   cinfo->budget,
+				   cinfo->cur_budget,
+				   (long)cinfo->period_cnt));
 }
 
 
@@ -456,7 +456,7 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	BUG_ON(orun == 0);
 	if (orun > 1)
 		trace_printk("ERR: timer overrun %d at period %ld\n",
-			    orun, cinfo->period_cnt);
+			     orun, (long)cinfo->period_cnt);
 
 	/* assign local period */
 	cinfo->period_cnt += orun;
@@ -495,7 +495,7 @@ static void period_timer_callback_slave(struct core_info *cinfo)
 
 	DEBUG(trace_printk("%p|New period %ld. global->budget=%d\n",
 			   cinfo->throttled_task,
-			   cinfo->period_cnt, global->budget));
+			   (long)cinfo->period_cnt, global->budget));
 	
 	/* update statistics. */
 	update_statistics(cinfo);
