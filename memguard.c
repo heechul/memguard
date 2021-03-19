@@ -165,7 +165,6 @@ module_param(g_hw_counter_id, hexint,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 #else
 module_param(g_hw_counter_id, int,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 #endif
-MODULE_PARM_DESC(g_hw_type, "raw hardware counter number");
 
 module_param(g_use_bwlock, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_use_bwlock, "enable/disable reclaim");
@@ -560,6 +559,9 @@ static struct perf_event *init_counter(int cpu, int budget)
 	/* select based on requested event type */
 	sched_perf_hw_attr.sample_period = budget;
 
+        pr_info("attr.type: %d\n",  (int)sched_perf_hw_attr.type);
+        pr_info("attr.config: %d\n",  (int)sched_perf_hw_attr.config);
+
 	/* Try to register using hardware perf events */
 	event = perf_event_create_kernel_counter(
 		&sched_perf_hw_attr,
@@ -923,8 +925,10 @@ int init_module( void )
 
 		/* create performance counter */
 		cinfo->event = init_counter(i, budget);
-		if (!cinfo->event)
-			break;
+		if (!cinfo->event) {
+			pr_err("Failed to create a counter %d\n", i);
+			return -ENODEV;
+		}
 
 		/* initialize budget */
 		cinfo->budget = cinfo->limit = cinfo->event->hw.sample_period;
