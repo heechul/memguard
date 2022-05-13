@@ -25,6 +25,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <inttypes.h>
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -32,6 +33,7 @@
 #include <errno.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <string.h>
 #include "list.h"
 
 /**************************************************************************
@@ -189,7 +191,7 @@ int main(int argc, char* argv[])
 				fprintf(stderr, "assigned priority %d\n", prio);
 			break;
 		case 'o': /* SCHED_BATCH */
-			if (!strcmp(optarg, "batch")) {
+			if (!strncmp(optarg, "batch", 5)) {
 				param.sched_priority = 0; 
 				if(sched_setscheduler(0, SCHED_BATCH, &param) == -1) {
 					perror("sched_setscheduler failed");
