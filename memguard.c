@@ -149,8 +149,16 @@ static int g_use_exclusive = 0;
 static int *g_read_budget_mb;
 static int *g_write_budget_mb;
 
-static int g_read_counter_id = 0x17;
-static int g_write_counter_id = 0x18; 
+#ifdef __arm__
+#  define PMU_LLC_MISS_COUNTER_ID 0x17   // LINE_REFILL
+#  define PMU_LLC_WB_COUNTER_ID   0x18   // LINE_WB
+#elif __x86_64__
+#  define PMU_LLC_MISS_COUNTER_ID 0x08b0 // OFFCORE_REQUESTS.ALL_DATA_RD
+#  define PMU_LLC_WB_COUNTER_ID   0x40b0 // OFFCORE_REQUESTS.WB
+#endif
+
+static int g_read_counter_id = PMU_LLC_MISS_COUNTER_ID;
+static int g_write_counter_id = PMU_LLC_WB_COUNTER_ID; 
 
 static struct dentry *memguard_dir;
 
@@ -1146,10 +1154,10 @@ int init_module( void )
 
 		/* initialize counter h/w & event structure */
 		if (g_read_budget_mb[i] == 0)
-			g_read_budget_mb[i] = 500;
+			g_read_budget_mb[i] = 500;  // default 500MB/s for read
 		
 		if (g_write_budget_mb[i] == 0)
-			g_write_budget_mb[i] = 100;
+			g_write_budget_mb[i] = 100; // default 100MB/s for write
 		
 		read_budget = convert_mb_to_events(g_read_budget_mb[i]);
 		write_budget = convert_mb_to_events(g_write_budget_mb[i]);
