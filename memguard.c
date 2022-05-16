@@ -149,10 +149,10 @@ static int g_use_exclusive = 0;
 static int *g_read_budget_mb;
 static int *g_write_budget_mb;
 
-#ifdef __arm__
+#if defined(__aarch64__) || defined(__arm__)
 #  define PMU_LLC_MISS_COUNTER_ID 0x17   // LINE_REFILL
 #  define PMU_LLC_WB_COUNTER_ID   0x18   // LINE_WB
-#elif __x86_64__
+#elif defined(__x86_64__)
 #  define PMU_LLC_MISS_COUNTER_ID 0x08b0 // OFFCORE_REQUESTS.ALL_DATA_RD
 #  define PMU_LLC_WB_COUNTER_ID   0x40b0 // OFFCORE_REQUESTS.WB
 #endif
