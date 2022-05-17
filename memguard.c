@@ -1126,7 +1126,7 @@ int init_module( void )
 	zalloc_cpumask_var(&global->active_mask, GFP_NOWAIT);
 	g_read_budget_mb = (int *)kmalloc(num_online_cpus()*sizeof(int), GFP_KERNEL);
 	g_write_budget_mb = (int *)kmalloc(num_online_cpus()*sizeof(int), GFP_KERNEL);
-	
+
 	if (g_period_us < 0 || g_period_us > 1000000) {
 		printk(KERN_INFO "Must be 0 < period < 1 sec\n");
 		return -ENODEV;
@@ -1153,11 +1153,8 @@ int init_module( void )
 		int read_budget, write_budget;
 
 		/* initialize counter h/w & event structure */
-		if (g_read_budget_mb[i] == 0)
-			g_read_budget_mb[i] = 500;  // default 500MB/s for read
-		
-		if (g_write_budget_mb[i] == 0)
-			g_write_budget_mb[i] = 100; // default 100MB/s for write
+                g_read_budget_mb[i] = 1000; // default 1000 MB/s for read
+                g_write_budget_mb[i] = 500; // default 500 MB/s for write
 		
 		read_budget = convert_mb_to_events(g_read_budget_mb[i]);
 		write_budget = convert_mb_to_events(g_write_budget_mb[i]);
