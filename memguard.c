@@ -496,18 +496,12 @@ static void memguard_read_process_overflow(struct irq_work *entry)
 	smp_mb(); // w -> r ordering of the local cpu.
 	if (cpumask_equal(global->throttle_mask, global->active_mask)) {
 		/* all other cores are alreay throttled */
-		if (g_use_exclusive == 1) {
-			/* algorithm 1: last one get all remaining time */
-			cinfo->exclusive_mode = 1;
-			cinfo->exclusive_time = ktime_get();
-			DEBUG_RECLAIM(trace_printk("exclusive mode begin\n"));
-			return;
-		} else if (g_use_exclusive == 2) {
-			/* algorithm 2: wakeup all (i.e., non regulation) */
+		if (g_use_exclusive == 2) {
+			/* SP: wakeup all (no regulation until next period) */
 			memguard_on_each_cpu_mask(global->throttle_mask, __unthrottle_core, NULL, 0);
 			return;
 		} else if (g_use_exclusive == 5) {
-			/* algorithm 5: begin a new period */
+			/* PS: begin a new period */
 			memguard_on_each_cpu_mask(global->active_mask, __newperiod, NULL, 0);
 			return;
 		} else if (g_use_exclusive > 5) {
@@ -608,16 +602,12 @@ static void memguard_write_process_overflow(struct irq_work *entry)
 	cpumask_set_cpu(smp_processor_id(), global->throttle_mask);
 	smp_mb(); // w -> r ordering of the local cpu.
 	if (cpumask_equal(global->throttle_mask, global->active_mask)) {
-		if (g_use_exclusive == 1) {
-			cinfo->exclusive_mode = 1;
-			cinfo->exclusive_time = ktime_get();
-			DEBUG_RECLAIM(trace_printk("exclusive mode begin\n"));
-			return;
-		} else if (g_use_exclusive == 2) {
-			/* algorithm 2: wakeup all (i.e., non regulation) */
+		if (g_use_exclusive == 2) {
+			/* SP: wakeup all (no regulation until next period) */
 			memguard_on_each_cpu_mask(global->throttle_mask, __unthrottle_core, NULL, 0);
 			return;
 		} else if (g_use_exclusive == 5) {
+			/* PS: begin a new period */
 			memguard_on_each_cpu_mask(global->active_mask, __newperiod, NULL, 0);
 			return;
 		} else if (g_use_exclusive > 5) {
@@ -634,13 +624,13 @@ static void memguard_write_process_overflow(struct irq_work *entry)
 	if (cinfo->prev_write_throttle_error)
 		return;
 	
-	DEBUG_RECLAIM(trace_printk("WHY fail to reclaim after %lld nsec.\n",
-				   TM_NS(ktime_get()) - TM_NS(start)));
+	DEBUG_RECLAIM(trace_printk("fail to reclaim after %lld nsec. throttle %s\n",
+				   TM_NS(ktime_get()) - TM_NS(start), current->comm));
 
 	cinfo->throttled_task = current;
 	cinfo->throttled_time = start;
 
-	WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
+	// WARN_ON_ONCE(!strncmp(current->comm, "swapper", 7));
 	wake_up_interruptible(&cinfo->throttle_evt);
 }
 
