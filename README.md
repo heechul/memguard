@@ -1,4 +1,4 @@
-# MemGuard: Memory Bandwidth Reservation System
+# MemGuard
 
 MemGuard is a memory bandwidth reservation system for multi-core platforms. 
 
