@@ -2,9 +2,10 @@
  * Memory bandwidth controller for multi-core systems
  *
  * Copyright (C) 2013  Heechul Yun <heechul@illinois.edu>
+ *           (C) 2022  Heechul Yun <heechul.yun@ku.edu>
  *
- * This file is distributed under the University of Illinois Open Source
- * License. See LICENSE.TXT for details.
+ * This file is distributed under GPL v2 License. 
+ * See LICENSE.TXT for details.
  *
  */
 
@@ -14,7 +15,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define DEBUG(x)
-#define DEBUG_RECLAIM(x)
+#define DEBUG_RECLAIM(x) x
 #define DEBUG_USER(x)
 #define DEBUG_PROFILE(x) x
 
@@ -44,13 +45,9 @@
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(5, 0, 0)
 #  include <uapi/linux/sched/types.h>
-#endif
-
-#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 13, 0)
+#elif LINUX_VERSION_CODE > KERNEL_VERSION(4, 13, 0)
 #  include <linux/sched/types.h>
-#endif
-
-#if LINUX_VERSION_CODE > KERNEL_VERSION(3, 8, 0)
+#elif LINUX_VERSION_CODE > KERNEL_VERSION(3, 8, 0)
 #  include <linux/sched/rt.h>
 #endif
 #include <linux/sched.h>
@@ -60,7 +57,19 @@
  **************************************************************************/
 #define CACHE_LINE_SIZE 64
 #define BUF_SIZE 256
-#define PREDICTOR 1  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
+#define PREDICTOR 0  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
+
+#define DEFAULT_RD_BUDGET_MB 2500
+#define DEFAULT_WR_BUDGET_MB 1000
+#define DEFAULT_QMIN_MB      1000
+
+#if defined(__aarch64__) || defined(__arm__)
+#  define PMU_LLC_MISS_COUNTER_ID 0x17   // LINE_REFILL
+#  define PMU_LLC_WB_COUNTER_ID   0x18   // LINE_WB
+#elif defined(__x86_64__) || defined(__i386__)
+#  define PMU_LLC_MISS_COUNTER_ID 0x08b0 // OFFCORE_REQUESTS.ALL_DATA_RD
+#  define PMU_LLC_WB_COUNTER_ID   0x40b0 // OFFCORE_REQUESTS.WB
+#endif
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(4, 10, 0) // somewhere between 4.4-4.10
 #  define TM_NS(x) (x)
@@ -151,17 +160,7 @@ static int g_period_us = 1000;
 static int g_use_reclaim = 0;   /* 1 - enable reclaim of "guaranteed" bw */
 static int g_use_exclusive = 0; /* 2 - spare bw sharing (rtas'13) 
 				   5 - propotional sharing (tc'15) */
-static int *g_read_budget_mb;
-static int *g_write_budget_mb;
-
-#if defined(__aarch64__) || defined(__arm__)
-#  define PMU_LLC_MISS_COUNTER_ID 0x17   // LINE_REFILL
-#  define PMU_LLC_WB_COUNTER_ID   0x18   // LINE_WB
-#elif defined(__x86_64__)
-#  define PMU_LLC_MISS_COUNTER_ID 0x08b0 // OFFCORE_REQUESTS.ALL_DATA_RD
-#  define PMU_LLC_WB_COUNTER_ID   0x40b0 // OFFCORE_REQUESTS.WB
-#endif
-
+static int g_qmin = INT_MAX;
 static int g_read_counter_id = PMU_LLC_MISS_COUNTER_ID;
 static int g_write_counter_id = PMU_LLC_WB_COUNTER_ID; 
 
@@ -218,7 +217,7 @@ static void memguard_on_each_cpu_mask(const struct cpumask *mask,
 static inline u64 convert_mb_to_events(int mb)
 {
 	return div64_u64((u64)mb*1024*1024,
-			 CACHE_LINE_SIZE* (1000000/g_period_us));
+			 CACHE_LINE_SIZE * (1000000/g_period_us));
 }
 static inline int convert_events_to_mb(u64 events)
 {
@@ -348,11 +347,13 @@ void update_statistics(struct core_info *cinfo)
 		cinfo->exclusive_mode = 0;
 		cinfo->overall.exclusive++;
 	}
-	DEBUG_PROFILE(trace_printk("%lld %d %p CPU%d org: %d cur: %d period: %ld\n",
-			   read_new, read_used, cinfo->throttled_task,
-			   smp_processor_id(), 
-			   cinfo->read_budget,
-			   cinfo->cur_read_budget,
+	DEBUG_PROFILE(trace_printk("%lld %d %s rd: %d cur_rd: %d wr: %d cur_wr: %d period: %ld\n",
+				   read_new, read_used,
+				   (cinfo->throttled_task)?cinfo->throttled_task->comm:"",
+				   cinfo->read_budget,
+				   cinfo->cur_read_budget,
+				   cinfo->write_budget,
+				   cinfo->cur_write_budget,
 				   (long) cinfo->period_cnt));
 }
 
@@ -437,12 +438,46 @@ static void memguard_read_process_overflow(struct irq_work *entry)
 	/* erroneous overflow, that could have happend before period timer
 	   stop the pmu */
 	if (read_budget_used < cinfo->cur_read_budget) {
-		trace_printk("ERR: overflow in timer. used %lld < cur_budget %d. ignore\n",
+		trace_printk("ERR: used %lld < cur_budget %d. ignore\n",
 			     read_budget_used, cinfo->cur_read_budget);
 		return;
 	}
 
-	/* no more overflow interrupt */
+	if (g_use_reclaim) {
+		int amount, i;
+		/* reclaim back the budget I donated (if exist) */
+		if (cinfo->cur_read_budget < cinfo->read_budget) {
+			amount = cinfo->read_budget - cinfo->cur_read_budget;
+			cinfo->cur_read_budget += amount;
+			local64_set(&cinfo->read_event->hw.period_left, amount);
+			DEBUG_RECLAIM(trace_printk("locally reclaimed %d\n",
+						   amount));
+			return;
+		}
+		/* try to reclaim from the global pool */
+		amount = 0;
+		for_each_online_cpu(i) {
+			struct core_info *ci = per_cpu_ptr(core_info, i);
+			if (i == smp_processor_id())
+				continue;
+			if (ci->cur_read_budget < ci->read_budget) {
+				/* reclaim other core's donated budget */
+				int tmp = ci->read_budget - ci->cur_read_budget;
+				ci->cur_read_budget += tmp;
+				amount += tmp;
+			}
+			if (amount > g_qmin)
+				break;
+		}
+		if (amount > 0) {
+			local64_set(&cinfo->read_event->hw.period_left, amount);
+			DEBUG_RECLAIM(trace_printk("globally reclaimed %d\n",
+						   amount));
+			return;
+		}
+	}
+
+        /* no more overflow interrupt */
 	local64_set(&cinfo->read_event->hw.period_left, 0xfffffff);
 
 	/* check if we donated too much */
@@ -491,8 +526,8 @@ static void memguard_read_process_overflow(struct irq_work *entry)
 	/*
 	 * fail to reclaim. now throttle this core
 	 */
-	DEBUG_RECLAIM(trace_printk("fail to reclaim after %lld nsec.\n",
-				   TM_NS(ktime_get()) - TM_NS(start)));
+	DEBUG_RECLAIM(trace_printk("fail to reclaim after %lld nsec. throttle %s\n",
+				   TM_NS(ktime_get()) - TM_NS(start), current->comm));
 
 	/* wake-up throttle task */
 	cinfo->throttled_task = current;
@@ -523,7 +558,40 @@ static void memguard_write_process_overflow(struct irq_work *entry)
 		return;
 	}
 
-	//local64_set(&cinfo->read_event->hw.period_left, 0xfffffff);
+	if (g_use_reclaim) {
+		int amount, i;
+		/* reclaim back the budget I donated (if exist) */
+		if (cinfo->cur_write_budget < cinfo->write_budget) {
+			amount = cinfo->write_budget - cinfo->cur_write_budget;
+			cinfo->cur_write_budget += amount;
+			local64_set(&cinfo->write_event->hw.period_left, amount);
+			DEBUG_RECLAIM(trace_printk("locally reclaimed %d\n",
+						   amount));
+			return;
+		}
+		/* try to reclaim from the global pool */
+		amount = 0;
+		for_each_online_cpu(i) {
+			struct core_info *ci = per_cpu_ptr(core_info, i);
+			if (i == smp_processor_id())
+				continue;
+			if (ci->cur_write_budget < ci->write_budget) {
+				/* reclaim other core's donated budget */
+				int tmp = ci->write_budget - ci->cur_write_budget;
+				ci->cur_write_budget += tmp;
+				amount += tmp;
+			}
+			if (amount > g_qmin)
+				break;
+		}
+		if (amount > 0) {
+			local64_set(&cinfo->write_event->hw.period_left, amount);
+			DEBUG_RECLAIM(trace_printk("globally reclaimed %d\n",
+						   amount));
+			return;
+		}
+	}
+
 	local64_set(&cinfo->write_event->hw.period_left, 0xfffffff);
 
 	if (write_budget_used < cinfo->write_budget) {
@@ -638,30 +706,18 @@ static void period_timer_callback_slave(struct core_info *cinfo)
 		target = current;
 	cinfo->throttled_task = NULL;
 
-	DEBUG(trace_printk("%p|New period %ld. global->budget=%d\n",
-			   cinfo->throttled_task,
-			   cinfo->period_cnt, cinfo->read_budget));
+	DEBUG(trace_printk("%p|New period %ld. read_budget=%d write_budget=%d\n",
+			   cinfo->throttled_task, cinfo->period_cnt,
+			   cinfo->read_budget, cinfo->write_budget));
 	
 	/* update statistics. */
 	update_statistics(cinfo);
 
 	/* new budget assignment from user */
-	if (cinfo->read_limit > 0) {
-		/* limit mode */
-		cinfo->read_budget = cinfo->read_limit;
-	} 
-
-	/* budget can't be zero? */
-	cinfo->read_budget = max(cinfo->read_budget, 1);
-	
-	/* new budget assignment from user */
-	if (cinfo->write_limit > 0) {
-		/* limit mode */
-		cinfo->write_budget = cinfo->write_limit;
-	} 
-
-	/* budget can't be zero? */
-	cinfo->write_budget = max(cinfo->write_budget, 1);
+	if (cinfo->read_limit > 0)
+		cinfo->read_budget = max(cinfo->read_limit, 1);
+	if (cinfo->write_limit > 0)
+		cinfo->write_budget = max(cinfo->write_limit, 1);
 
 	if (cinfo->read_event->hw.sample_period != cinfo->read_budget) {
 		/* new budget is assigned */
@@ -669,39 +725,29 @@ static void period_timer_callback_slave(struct core_info *cinfo)
 				   cinfo->read_budget);
 		cinfo->read_event->hw.sample_period = cinfo->read_budget;
 	}
-	
 	if (cinfo->write_event->hw.sample_period != cinfo->write_budget) {
 		/* new budget is assigned */
 		trace_printk("MSG: new write budget %d is assigned\n", 
 				   cinfo->write_budget);
 		cinfo->write_event->hw.sample_period = cinfo->write_budget;
 	}
-#if 1
+
 	/* per-task donation policy */
-        if (g_use_reclaim && cinfo->read_used[1] < cinfo->read_budget) {
-            /* donate 'expected surplus' ahead of time. */
-            int surplus = max(cinfo->read_budget - cinfo->read_used[1], 0);
-            cinfo->cur_read_budget = cinfo->read_budget - surplus;
+        if (g_use_reclaim) {
+		/* donate 'expected surplus' ahead of time. */
+		int sur_rd, sur_wr;
+		sur_rd = max(cinfo->read_budget - cinfo->read_used[PREDICTOR], 0);
+		cinfo->cur_read_budget = cinfo->read_budget - sur_rd;
+		sur_wr = max(cinfo->write_budget - cinfo->write_used[PREDICTOR], 0);
+		cinfo->cur_write_budget = cinfo->write_budget - sur_wr;
+		DEBUG_RECLAIM(trace_printk("donated %d %d\n", sur_rd, sur_wr));
         } else {
-            cinfo->cur_read_budget = cinfo->read_budget;
+		cinfo->cur_read_budget = cinfo->read_budget;
+		cinfo->cur_write_budget = cinfo->write_budget;
         }
-        
-        if (g_use_reclaim && cinfo->write_used[1] < cinfo->write_budget) {
-            /* donate 'expected surplus' ahead of time. */
-            int surplus = max(cinfo->write_budget - cinfo->write_used[1], 0);
-            cinfo->cur_write_budget = cinfo->write_budget - surplus;
-        } else {
-            cinfo->cur_write_budget = cinfo->write_budget;
-        }
-#else
-        cinfo->cur_read_budget = cinfo->read_budget;
-        cinfo->cur_write_budget = cinfo->write_budget;
-#endif
+
 	/* setup an interrupt */
-	cinfo->cur_read_budget = max(1, cinfo->cur_read_budget);
 	local64_set(&cinfo->read_event->hw.period_left, cinfo->cur_read_budget);
-	
-	cinfo->cur_write_budget = max(1, cinfo->cur_write_budget);
 	local64_set(&cinfo->write_event->hw.period_left, cinfo->cur_write_budget);
 
 	/* enable performance counter */
@@ -748,7 +794,7 @@ static struct perf_event *init_counter(int cpu, int budget, int counter_id, void
 	}
 
 	/* success path */
-	pr_info("cpu%d enabled counter %d.\n", cpu, counter_id);
+	pr_info("cpu%d enabled counter 0x%x\n", cpu, counter_id);
 
 	return event;
 }
@@ -1149,9 +1195,6 @@ int init_module( void )
 	memset(global, 0, sizeof(struct memguard_info));
 	zalloc_cpumask_var(&global->throttle_mask, GFP_NOWAIT);
 	zalloc_cpumask_var(&global->active_mask, GFP_NOWAIT);
-	g_read_budget_mb = (int *)kmalloc(num_online_cpus()*sizeof(int), GFP_KERNEL);
-	g_write_budget_mb = (int *)kmalloc(num_online_cpus()*sizeof(int), GFP_KERNEL);
-
 	if (g_period_us < 0 || g_period_us > 1000000) {
 		printk(KERN_INFO "Must be 0 < period < 1 sec\n");
 		return -ENODEV;
@@ -1169,6 +1212,8 @@ int init_module( void )
 		pr_info("RAW HW WRITE COUNTER ID: 0x%x\n", g_write_counter_id);	
 	pr_info("HZ=%d, g_period_us=%d\n", HZ, g_period_us);
 
+	g_qmin = convert_mb_to_events(DEFAULT_QMIN_MB); // default 1000MB/s
+
 	pr_info("Initilizing perf counter\n");
 	core_info = alloc_percpu(struct core_info);
 
@@ -1178,12 +1223,8 @@ int init_module( void )
 		int read_budget, write_budget;
 
 		/* initialize counter h/w & event structure */
-                g_read_budget_mb[i] = 1000; // default 1000 MB/s for read
-                g_write_budget_mb[i] = 500; // default 500 MB/s for write
-		
-		read_budget = convert_mb_to_events(g_read_budget_mb[i]);
-		write_budget = convert_mb_to_events(g_write_budget_mb[i]);
-		pr_info("budget[%d] = %d (%d MB)\n", i, read_budget, g_read_budget_mb[i]);
+		read_budget = convert_mb_to_events(DEFAULT_RD_BUDGET_MB);
+		write_budget = convert_mb_to_events(DEFAULT_WR_BUDGET_MB);
 
 		/* initialize per-core data structure */
 		memset(cinfo, 0, sizeof(struct core_info));
@@ -1290,8 +1331,6 @@ void cleanup_module( void )
 	free_cpumask_var(global->throttle_mask);
 	free_cpumask_var(global->active_mask);
 	free_percpu(core_info);
-	kfree(g_read_budget_mb);
-	kfree(g_write_budget_mb);
 	put_online_cpus();
 	pr_info("module uninstalled successfully\n");
 	return;
