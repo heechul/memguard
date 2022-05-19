@@ -1,19 +1,20 @@
-Original repo: https://github.com/heechul/memguard
+# MemGuard: Memory Bandwidth Reservation System
 
-This repo is an extension of the MemGuard tool that utilizes an additional
-counter for limiting write intensive applications without ruining the
-performance of read intensive applications.
+MemGuard is a memory bandwidth reservation system for multi-core platforms. 
 
-An example of it's utilization can be seen in [CacheDOS](https://github.com/mbechtel2/CacheDOS).
+## ChangeLog
 
-Install
-===========
+- May 2022 
+  - read/write separate reservation (from [RTAS'19](https://www.ittc.ku.edu/~heechul/papers/cachedos-rtas2019-camera.pdf))
+  - bandwidth reclaiming (re-enabled. originally from [RTAS'13](https://www.ittc.ku.edu/~heechul/papers/memguard-rtas13.pdf))
+ 
+## Install
+
 	# make
 	# insmod memguard.ko
 	    <-- Load the module by doing
 
-Usage
-===========  
+## Usage
 Once the module is loaded, the thresholds can be set as follows:
 
 	- per-core LLC miss threshold assignment.
@@ -21,7 +22,17 @@ Once the module is loaded, the thresholds can be set as follows:
 	assign 500 MB/s for Cores 0,1,2,3
 	# echo mb 500 500 500 500 > /sys/kernel/debug/memguard/read_limit
 
-    - per-core LLC writeback threshold assignment.
+	- per-core LLC writeback threshold assignment.
 
 	assign 100 MB/s for Cores 0,1,2,3
 	# echo mb 100 100 100 100 > /sys/kernel/debug/memguard/write_limit
+
+	- reclaim control
+
+	enable
+	# echo reclaim 1 > /sys/kernel/debug/memguard/control
+
+	disable
+	# echo reclaim 0 > /sys/kernel/debug/memguard/control
+
+	
