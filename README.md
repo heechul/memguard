@@ -27,7 +27,7 @@ Once the module is loaded, the thresholds can be set as follows:
 	assign 100 MB/s for Cores 0,1,2,3
 	# echo mb 100 100 100 100 > /sys/kernel/debug/memguard/write_limit
 
-	- reclaim control
+	- reclaim control (of reserved bandwidth)
 
 	enable
 	# echo reclaim 1 > /sys/kernel/debug/memguard/control
@@ -35,4 +35,13 @@ Once the module is loaded, the thresholds can be set as follows:
 	disable
 	# echo reclaim 0 > /sys/kernel/debug/memguard/control
 
-	
+	- exclusive mode control (of best-effort bandwidth)
+
+	strict reservation. (disable best-effort sharing. only use guaranteed bw)
+	# echo exclusive 0 > /sys/kernel/debug/memguard/control
+
+	spare b/w sharing mode (see RTAS13)
+	# echo exclusive 2 > /sys/kernel/debug/memguard/control
+
+	proportional share mode (see TC'15)
+	# echo exclusive 5 > /sys/kernel/debug/memguard/control
