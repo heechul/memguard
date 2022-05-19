@@ -10,9 +10,11 @@ MemGuard is a memory bandwidth reservation system for multi-core platforms.
  
 ## Install
 
+	- build
 	# make
+
+	- load the module
 	# insmod memguard.ko
-	    <-- Load the module by doing
 
 ## Usage
 Once the module is loaded, the thresholds can be set as follows:
