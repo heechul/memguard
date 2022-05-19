@@ -88,44 +88,47 @@ struct memstat{
 /* percpu info */
 struct core_info {
 	/* user configurations */
-	int read_budget;              /* assigned read budget */
-	int write_budget;        /* assigned write budged */
-	int read_limit;               /* read limit mode (exclusive to weight)*/
-	int write_limit;		 /* write limit mode (exclusive to weight) */
+	int read_limit;          /* read limit mode */
+	int write_limit;	 /* write limit mode */
 
 	/* for control logic */
-	int cur_read_budget;          /* currently available read budget */
-	int cur_write_budget;		  /* currently available write budget */
+	int read_budget;         /* assigned read budget */
+	int write_budget;        /* assigned write budged */
+
+	int cur_read_budget;     /* currently available read budget */
+	int cur_write_budget;    /* currently available write budget */
 
 	struct task_struct * throttled_task;
 	
 	ktime_t throttled_time;  /* absolute time when throttled */
 
-	u64 old_read_val;             /* hold previous read counter value */
-	u64 old_write_val;		 /* hold previous write counter value */
-	int prev_read_throttle_error; /* check whether there was throttle error in 
+	u64 old_read_val;        /* hold previous read counter value */
+	u64 old_write_val;	 /* hold previous write counter value */
+	int prev_read_throttle_error;  /* check whether there was throttle error in 
 				    the previous period for the read counter */
     	int prev_write_throttle_error; /* check whether there was throttle error in 
 				    the previous period for the write counter */
 
-	int exclusive_mode;      /* 1 - if in exclusive mode */
+	int exclusive_mode;      /* 1 - if in exclusive (best-effort) mode */
 	ktime_t exclusive_time;  /* time when exclusive mode begins */
 
 	struct irq_work	read_pending;  /* delayed work for NMIs */
 	struct perf_event *read_event; /* PMC: LLC misses */
+
+	struct irq_work write_pending;   /* delayed work for NMIs */
+	struct perf_event *write_event;  /* PMC: LLC writebacks */
     
-    	struct irq_work write_pending;   /* delayed work for NMIs */
-	struct perf_event *write_event;  /* PMC: LLC writebacks */                                   
 	struct task_struct *throttle_thread;  /* forced throttle idle thread */
 	wait_queue_head_t throttle_evt; /* throttle wait queue */
 
 	/* statistics */
 	struct memstat overall;  /* stat for overall periods. reset by user */
 	int read_used[3];        /* EWMA memory load */
-	int write_used[3];		 /* EWMA memory load */
-	int64_t period_cnt;         /* active periods count */
+	int write_used[3];	 /* EWMA memory load */
+	int64_t period_cnt;      /* active periods count */
+
+	/* per-core hr timer */
 	struct hrtimer hr_timer;
-	
 };
 
 /* global info */
@@ -144,8 +147,10 @@ static struct memguard_info memguard_info;
 static struct core_info __percpu *core_info;
 
 static int g_period_us = 1000;
-static int g_use_exclusive = 0;
 
+static int g_use_reclaim = 0;   /* 1 - enable reclaim of "guaranteed" bw */
+static int g_use_exclusive = 0; /* 2 - spare bw sharing (rtas'13) 
+				   5 - propotional sharing (tc'15) */
 static int *g_read_budget_mb;
 static int *g_write_budget_mb;
 
@@ -671,11 +676,27 @@ static void period_timer_callback_slave(struct core_info *cinfo)
 				   cinfo->write_budget);
 		cinfo->write_event->hw.sample_period = cinfo->write_budget;
 	}
-
+#if 1
 	/* per-task donation policy */
-	cinfo->cur_read_budget = cinfo->read_budget;
-	cinfo->cur_write_budget = cinfo->write_budget;
-	
+        if (g_use_reclaim && cinfo->read_used[1] < cinfo->read_budget) {
+            /* donate 'expected surplus' ahead of time. */
+            int surplus = max(cinfo->read_budget - cinfo->read_used[1], 0);
+            cinfo->cur_read_budget = cinfo->read_budget - surplus;
+        } else {
+            cinfo->cur_read_budget = cinfo->read_budget;
+        }
+        
+        if (g_use_reclaim && cinfo->write_used[1] < cinfo->write_budget) {
+            /* donate 'expected surplus' ahead of time. */
+            int surplus = max(cinfo->write_budget - cinfo->write_used[1], 0);
+            cinfo->cur_write_budget = cinfo->write_budget - surplus;
+        } else {
+            cinfo->cur_write_budget = cinfo->write_budget;
+        }
+#else
+        cinfo->cur_read_budget = cinfo->read_budget;
+        cinfo->cur_write_budget = cinfo->write_budget;
+#endif
 	/* setup an interrupt */
 	cinfo->cur_read_budget = max(1, cinfo->cur_read_budget);
 	local64_set(&cinfo->read_event->hw.period_left, cinfo->cur_read_budget);
@@ -788,7 +809,9 @@ static ssize_t memguard_control_write(struct file *filp,
 	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0)
 		return 0;
 
-	if (!strncmp(p, "exclusive ", 10))
+	if (!strncmp(p, "reclaim ", 8))
+		sscanf(p+8, "%d", &g_use_reclaim);
+	else if (!strncmp(p, "exclusive ", 10))
 		sscanf(p+10, "%d", &g_use_exclusive);
 	else
 		pr_info("ERROR: %s\n", p);
@@ -799,6 +822,8 @@ static int memguard_control_show(struct seq_file *m, void *v)
 {
 	struct memguard_info *global = &memguard_info;
 	char buf[BUF_SIZE];
+	seq_printf(m, "reclaim: %d\n", g_use_reclaim);
+	cpumap_print_to_pagebuf(1, buf, global->active_mask);
 	seq_printf(m, "exclusive: %d\n", g_use_exclusive);
 	cpumap_print_to_pagebuf(1, buf, global->active_mask);
 	seq_printf(m, "active: %s\n", buf);
@@ -894,7 +919,7 @@ static int memguard_read_limit_show(struct seq_file *m, void *v)
 	int i, cpu;
 	cpu = get_cpu();
 
-	seq_printf(m, "cpu  |budget (MB/s,pct,weight)\n");
+	seq_printf(m, "cpu  |budget (MB/s)\n");
 	seq_printf(m, "-------------------------------\n");
 
 	for_each_online_cpu(i) {
@@ -1025,7 +1050,7 @@ static int memguard_write_limit_show(struct seq_file *m, void *v)
 	int i, cpu;
 	cpu = get_cpu();
 
-	seq_printf(m, "cpu  |budget (MB/s,pct,weight)\n");
+	seq_printf(m, "cpu  |budget (MB/s)\n");
 	seq_printf(m, "-------------------------------\n");
 
 	for_each_online_cpu(i) {
