@@ -1,31 +1,50 @@
-# MemGuard: Memory Bandwidth Reservation System
+MemGuard: Memory Bandwidth Reservation System
 
-MemGuard is a memory bandwidth reservation system for multi-core platforms. 
+Heechul Yun (heechul@illinois.edu)
 
-## ChangeLog
+Preparation
+===========  
+Recommended kernel settings are as follows:
 
-- May 2022 
-  - read/write separate reservation (from [RTAS'19](https://www.ittc.ku.edu/~heechul/papers/cachedos-rtas2019-camera.pdf))
-  - bandwidth reclaiming (re-enabled. originally from [RTAS'13](https://www.ittc.ku.edu/~heechul/papers/memguard-rtas13.pdf))
- 
-## Install
+	CONFIG_ACPI_PROCESSOR=n
+	CONFIG_CPU_IDLE=n
 
+Install
+===========
 	# make
-	# insmod memguard.ko
+	# insmod memguard.ko	
 	    <-- Load the module by doing
 
-## Usage
-Once the module is loaded, the thresholds can be set as follows:
+Usage
+===========  
 
-	- per-core LLC miss threshold assignment.
+Once the module is loaded, it provides several configuration interfaces as follows:
 
-	assign 500 MB/s for Cores 0,1,2,3
-	# echo mb 500 500 500 500 > /sys/kernel/debug/memguard/read_limit
+	- per-core bandwidth assignment.
 
-	- per-core LLC writeback threshold assignment.
+	assign 900,100,100,100 MB/s for Core 0,1,2,3
+	# echo mb 900 100 100 100 > /sys/kernel/debug/memguard/limit
 
-	assign 100 MB/s for Cores 0,1,2,3
-	# echo mb 100 100 100 100 > /sys/kernel/debug/memguard/write_limit
+	assign 70%,10%,10%,10% of guaranteed bandwidth(r_min) for Core 0,1,2,3
+	# echo 70 10 10 10 > /sys/kernel/debug/memguard/limit
+
+	assign weights(1:2:4:8) for Core 0,1,2,3
+	# echo 1 2 4 8 > /sys/kernel/debug/memguard/share
+
+
+	- per-task mode (use task priority as core's memory weight)
+
+	enable per-task mode
+	# echo taskprio 1 > /sys/kernel/debug/memguard/control
+
+	disble per-task mode (=per-core mode)
+	# echo taskprio 0 > /sys/kernel/debug/memguard/control
+
+
+	- set maxbw (r_min in the paper)
+
+	# echo maxbw 1200 > /sys/kernel/debug/memguard/control
+
 
 	- reclaim control
 
@@ -35,4 +54,17 @@ Once the module is loaded, the thresholds can be set as follows:
 	disable
 	# echo reclaim 0 > /sys/kernel/debug/memguard/control
 
-	
+
+	- exclusive mode control
+
+	strict reservation. (disable best-effort sharing. only use guaranteed bw)
+	# echo exclusive 0 > /sys/kernel/debug/memguard/control
+
+	last exclusive. last core exclusively use the rest b/w (not in the paper)
+	# echo exclusive 1 > /sys/kernel/debug/memguard/control
+
+	spare b/w sharing mode (see RTAS13)
+	# echo exclusive 2 > /sys/kernel/debug/memguard/control
+
+	proportional share mode (see TC submission)  
+	# echo exclusive 5 > /sys/kernel/debug/memguard/control
