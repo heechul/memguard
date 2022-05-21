@@ -145,7 +145,6 @@ struct memguard_info {
 	ktime_t period_in_ktime;
 	cpumask_var_t throttle_mask;
 	cpumask_var_t active_mask;
-	atomic_t wsum;
 };
 
 
