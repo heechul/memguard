@@ -890,7 +890,7 @@ static void __update_budget(void *info)
 		return;
 	}
 	cinfo->read_limit = (unsigned long)info;
-	DEBUG_USER(trace_printk("MSG: New budget of Core%d is %d\n",
+	DEBUG_USER(trace_printk("MSG: New read budget of Core%d is %d\n",
 				smp_processor_id(), cinfo->read_budget));
 
 }
@@ -999,6 +999,7 @@ static int memguard_usage_show(struct seq_file *m, void *v)
 
 	/* current utilization */
 	for (j = 0; j < 3; j++) {
+		seq_printf(m, "EWMA[%d]: ", j);
 		for_each_online_cpu(i) {
 			struct core_info *cinfo = per_cpu_ptr(core_info, i);
 			u64 budget, used, util;
@@ -1024,6 +1025,7 @@ static int memguard_usage_show(struct seq_file *m, void *v)
 					 (total_budget) ? total_budget : 1 );
 		seq_printf(m, "%lld ", result);
 	}
+        seq_printf(m, "\n");
 	return 0;
 }
 
