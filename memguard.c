@@ -347,9 +347,9 @@ void update_statistics(struct core_info *cinfo)
 		cinfo->exclusive_mode = 0;
 		cinfo->overall.exclusive++;
 	}
-	DEBUG_PROFILE(trace_printk("%lld %d %s rd: %d cur_rd: %d wr: %d cur_wr: %d period: %ld\n",
-				   read_new, read_used,
-				   (cinfo->throttled_task)?cinfo->throttled_task->comm:"",
+	DEBUG_PROFILE(trace_printk("used: %d %d thtotteld: %s read: %d %d write: %d %d period: %ld\n",
+				   read_used, write_used,
+				   (cinfo->throttled_task)?cinfo->throttled_task->comm:"no",
 				   cinfo->read_budget,
 				   cinfo->cur_read_budget,
 				   cinfo->write_budget,
