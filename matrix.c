@@ -1,3 +1,11 @@
+// https://stackoverflow.com/questions/15829223/loop-tiling-blocking-for-large-dense-matrix-multiplication
+//
+// https://stackoverflow.com/questions/59009628/tiled-matrix-multiplication-using-avx
+//
+// https://stackoverflow.com/questions/8126311/how-much-of-what-every-programmer-should-know-about-memory-is-still-valid
+//
+// https://github.com/heechul/fastspconv-cvpr2020/blob/master/spmm-16x2-neonfma.c
+//
 #define _GNU_SOURCE             /* See feature_test_macros(7) */
 #include <stdlib.h>
 #include <stdio.h>
@@ -11,7 +19,7 @@
 
 /* change dimension size as needed */
 struct timeval tv; 
-const int dimension = 2048;
+int dimension = 1024;
 double start, end; /* time */
 int i, j, k; /* progress */
 FILE *g_fd = NULL;
@@ -26,7 +34,7 @@ double timestamp()
 
 void quit(int param)
 {
-        end = timestamp();
+	end = timestamp();
 
 	if (g_fd) {
 		fprintf(g_fd, "matrix: %d (%d,%d,%d) took %f ns\n", 
@@ -42,6 +50,17 @@ void quit(int param)
 	exit(1);
 }
 
+// a naive matrix multiplication implementation. 
+void matmult(double *A, double *B, double *C, int dimension)
+{
+	for(int i = 0; i < dimension; i++) {
+		for(j = 0; j < dimension; j++) {
+			for(k = 0; k < dimension; k++) {
+				C[dimension*i+j] += A[dimension*i+k] * B[dimension*k+j];
+			}
+		}
+	}	
+}
 int main(int argc, char *argv[])
 {
 
@@ -52,7 +71,6 @@ int main(int argc, char *argv[])
 	int cpuid = 0;
 	int prio = 0;        
 	int num_processors;
-	cpu_set_t cmask;
 	struct sched_param param;
 
 	/*
@@ -60,6 +78,8 @@ int main(int argc, char *argv[])
 	 */
 	while ((opt = getopt(argc, argv, "m:a:n:t:c:i:p:o:f:l:xh")) != -1) {
 		switch (opt) {
+#if 0 
+		cpu_set_t cmask;
 		case 'c': /* set CPU affinity */
 			cpuid = strtol(optarg, NULL, 0);
 			num_processors = sysconf(_SC_NPROCESSORS_CONF);
@@ -92,6 +112,10 @@ int main(int argc, char *argv[])
 			else
 				fprintf(stderr, "assigned priority %d\n", prio);
 			break;
+#endif
+		case 'n':
+			dimension = strtol(optarg, NULL, 0);
+			break;
 
 		case 'f': /* set file descriptor */
 			g_fd = fopen(optarg, "a+");
@@ -101,41 +125,32 @@ int main(int argc, char *argv[])
 		}
 	}
 
-        A = (double*)malloc(dimension*dimension*sizeof(double));
-        B = (double*)malloc(dimension*dimension*sizeof(double));
-        C = (double*)malloc(dimension*dimension*sizeof(double));
+	printf("dimension: %d\n", dimension);
 
-        srand(292);
+	A = (double*)malloc(dimension*dimension*sizeof(double));
+	B = (double*)malloc(dimension*dimension*sizeof(double));
+	C = (double*)malloc(dimension*dimension*sizeof(double));
 
-	/* set signals to terminate once time has been reached */
-	signal(SIGINT, &quit);
-	if (finish > 0) {
-		signal(SIGALRM, &quit);
-		alarm(finish);
-	}
+	srand(292);
 
-        for(i = 0; i < dimension; i++)
-                for(j = 0; j < dimension; j++)
-                {   
-                        A[dimension*i+j] = (rand()/(RAND_MAX + 1.0));
-                        B[dimension*i+j] = (rand()/(RAND_MAX + 1.0));
-                        C[dimension*i+j] = 0.0;
-                }   
+	for(i = 0; i < dimension; i++)
+			for(j = 0; j < dimension; j++)
+			{   
+					A[dimension*i+j] = (rand()/(RAND_MAX + 1.0));
+					B[dimension*i+j] = (rand()/(RAND_MAX + 1.0));
+					C[dimension*i+j] = 0.0;
+			}   
 
-        start = timestamp();
-        for(i = 0; i < dimension; i++)
-                for(j = 0; j < dimension; j++)
-                        for(k = 0; k < dimension; k++) {
-                                C[dimension*i+j] += A[dimension*i+k] *
-                                        B[dimension*k+j];
-			}
+	start = timestamp();
 
-        end = timestamp();
-        printf("\nsecs:%f\n", end-start);
+	matmult(A, B, C, dimension);
 
-        free(A);
-        free(B);
-        free(C);
+	end = timestamp();
+	printf("\nsecs:%f\n", end-start);
 
-        return 0;
+	free(A);
+	free(B);
+	free(C);
+
+	return 0;
 }
