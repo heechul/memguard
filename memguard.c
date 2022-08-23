@@ -57,11 +57,11 @@
  **************************************************************************/
 #define CACHE_LINE_SIZE 64
 #define BUF_SIZE 256
-#define PREDICTOR 0  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
+#define PREDICTOR 1  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
 
-#define DEFAULT_RD_BUDGET_MB 2500
-#define DEFAULT_WR_BUDGET_MB 1000
-#define DEFAULT_QMIN_MB      1000
+#define DEFAULT_RD_BUDGET_MB 1000
+#define DEFAULT_WR_BUDGET_MB  500
+#define DEFAULT_QMIN_MB       500
 
 #if defined(__aarch64__) || defined(__arm__)
 #  define PMU_LLC_MISS_COUNTER_ID 0x17   // LINE_REFILL
@@ -81,9 +81,9 @@
  * Public Types
  **************************************************************************/
 struct memstat{
-	u64 used_read_budget;         /* used read budget */
+	u64 used_read_budget;    /* used read budget */
 	u64 used_write_budget;	 /* used write budget */
-	u64 assigned_read_budget; /* assigned read budget */
+	u64 assigned_read_budget;  /* assigned read budget */
 	u64 assigned_write_budget; /* assigned write budget */
 	u64 throttled_time_ns;   
 	int throttled;           /* throttled period count */
@@ -136,6 +136,7 @@ struct core_info {
 	int write_used[3];	 /* EWMA memory load */
 	int64_t period_cnt;      /* active periods count */
 
+	int rtcore;              /* never throttle an rt core */
 	/* per-core hr timer */
 	struct hrtimer hr_timer;
 };
@@ -346,9 +347,8 @@ void update_statistics(struct core_info *cinfo)
 		cinfo->exclusive_mode = 0;
 		cinfo->overall.exclusive++;
 	}
-	DEBUG_PROFILE(trace_printk("%lld %d %s rd: %d cur_rd: %d wr: %d cur_wr: %d period: %ld\n",
-				   read_new, read_used,
-				   (cinfo->throttled_task)?cinfo->throttled_task->comm:"",
+	DEBUG_PROFILE(trace_printk("used: %d %d read: %d %d write: %d %d period: %ld\n",
+				   read_used, write_used,
 				   cinfo->read_budget,
 				   cinfo->cur_read_budget,
 				   cinfo->write_budget,
@@ -680,7 +680,6 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 static void period_timer_callback_slave(struct core_info *cinfo)
 {
 	struct memguard_info *global = &memguard_info;
-	struct task_struct *target;
 	int cpu = smp_processor_id();
 
 	/* I'm actively participating */
@@ -688,17 +687,6 @@ static void period_timer_callback_slave(struct core_info *cinfo)
 	smp_mb();
 	cpumask_set_cpu(cpu, global->active_mask);
 
-	/* unthrottle tasks (if any) */
-	if (cinfo->throttled_task)
-		target = (struct task_struct *)cinfo->throttled_task;
-	else
-		target = current;
-	cinfo->throttled_task = NULL;
-
-	DEBUG(trace_printk("%p|New period %ld. read_budget=%d write_budget=%d\n",
-			   cinfo->throttled_task, cinfo->period_cnt,
-			   cinfo->read_budget, cinfo->write_budget));
-	
 	/* update statistics. */
 	update_statistics(cinfo);
 
@@ -735,9 +723,15 @@ static void period_timer_callback_slave(struct core_info *cinfo)
 		cinfo->cur_write_budget = cinfo->write_budget;
         }
 
-	/* setup an interrupt */
-	local64_set(&cinfo->read_event->hw.period_left, cinfo->cur_read_budget);
-	local64_set(&cinfo->write_event->hw.period_left, cinfo->cur_write_budget);
+	/* unthrottle tasks (if any) */
+	cinfo->throttled_task = NULL;
+
+        /* setup overflow interrupts except RT cores */
+	if (!cinfo->rtcore) {
+		/* setup an interrupt */
+		local64_set(&cinfo->read_event->hw.period_left, cinfo->cur_read_budget);
+		local64_set(&cinfo->write_event->hw.period_left, cinfo->cur_write_budget);
+	}
 
 	/* enable performance counter */
 	cinfo->read_event->pmu->start(cinfo->read_event, PERF_EF_RELOAD);
@@ -841,10 +835,15 @@ static ssize_t memguard_control_write(struct file *filp,
 {
 	char buf[BUF_SIZE];
 	char *p = buf;
+
 	if (copy_from_user(&buf, ubuf, (cnt > BUF_SIZE) ? BUF_SIZE: cnt) != 0)
 		return 0;
-
-	if (!strncmp(p, "reclaim ", 8))
+	if (!strncmp(p, "rt ", 3)) {
+		int i, val;
+		sscanf(p+3, "%d %d", &i, &val);
+		if (i >=0 && i < num_online_cpus())
+			per_cpu_ptr(core_info, i)->rtcore = val;
+	} else if (!strncmp(p, "reclaim ", 8))
 		sscanf(p+8, "%d", &g_use_reclaim);
 	else if (!strncmp(p, "exclusive ", 10))
 		sscanf(p+10, "%d", &g_use_exclusive);
@@ -858,7 +857,6 @@ static int memguard_control_show(struct seq_file *m, void *v)
 	struct memguard_info *global = &memguard_info;
 	char buf[BUF_SIZE];
 	seq_printf(m, "reclaim: %d\n", g_use_reclaim);
-	cpumap_print_to_pagebuf(1, buf, global->active_mask);
 	seq_printf(m, "exclusive: %d\n", g_use_exclusive);
 	cpumap_print_to_pagebuf(1, buf, global->active_mask);
 	seq_printf(m, "active: %s\n", buf);
@@ -954,7 +952,7 @@ static int memguard_read_limit_show(struct seq_file *m, void *v)
 	int i, cpu;
 	cpu = get_cpu();
 
-	seq_printf(m, "cpu  |budget (MB/s)\n");
+	seq_printf(m, "cpu  |budget (MB/s)\t RT?\n");
 	seq_printf(m, "-------------------------------\n");
 
 	for_each_online_cpu(i) {
@@ -964,9 +962,9 @@ static int memguard_read_limit_show(struct seq_file *m, void *v)
 			budget = cinfo->read_limit;
 
 		WARN_ON_ONCE(budget == 0);
-		seq_printf(m, "CPU%d: %d (%dMB/s)\n", 
-				   i, budget,
-				   convert_events_to_mb(budget));
+		seq_printf(m, "CPU%d: %d (%dMB/s)\t %s\n", 
+			   i, budget, convert_events_to_mb(budget),
+			   cinfo->rtcore?"Yes":"No");
 	}
 
 	put_cpu();
@@ -1087,7 +1085,7 @@ static int memguard_write_limit_show(struct seq_file *m, void *v)
 	int i, cpu;
 	cpu = get_cpu();
 
-	seq_printf(m, "cpu  |budget (MB/s)\n");
+	seq_printf(m, "cpu  |budget (MB/s)\t RT?\n");
 	seq_printf(m, "-------------------------------\n");
 
 	for_each_online_cpu(i) {
@@ -1097,9 +1095,9 @@ static int memguard_write_limit_show(struct seq_file *m, void *v)
 			budget = cinfo->write_limit;
 
 		WARN_ON_ONCE(budget == 0);
-		seq_printf(m, "CPU%d: %d (%dMB/s)\n", 
-				   i, budget,
-				   convert_events_to_mb(budget));
+		seq_printf(m, "CPU%d: %d (%dMB/s) %s\n", 
+			   i, budget, convert_events_to_mb(budget),
+			   cinfo->rtcore?"Yes":"No");
 	}
 
 	put_cpu();
