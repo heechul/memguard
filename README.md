@@ -3,7 +3,8 @@
 MemGuard is a memory bandwidth reservation system for multi-core platforms. 
 
 ## ChangeLog
-
+- Dec 2022
+  - 5.15+ kernel support
 - May 2022 
   - read/write separate reservation (from [RTAS'19](https://www.ittc.ku.edu/~heechul/papers/cachedos-rtas2019-camera.pdf))
   - bandwidth reclaiming (re-enabled. originally from [RTAS'13](https://www.ittc.ku.edu/~heechul/papers/memguard-rtas13.pdf))
