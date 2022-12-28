@@ -1206,7 +1206,6 @@ int init_module( void )
 	pr_info("Initilizing perf counter\n");
 	core_info = alloc_percpu(struct core_info);
 
-	get_online_cpus();
 	for_each_online_cpu(i) {
 		struct core_info *cinfo = per_cpu_ptr(core_info, i);
 		int read_budget, write_budget;
@@ -1283,7 +1282,6 @@ int init_module( void )
 		div64_u64(TM_NS(global->period_in_ktime), 1000));
 	on_each_cpu(__start_counter, NULL, 0);
 
-	put_online_cpus();
 	return 0;
 }
 
@@ -1292,8 +1290,6 @@ void cleanup_module( void )
 	int i;
 
 	struct memguard_info *global = &memguard_info;
-
-	get_online_cpus();
 
 	/* stop perf_event counters and timers */
 	on_each_cpu(__stop_counter, NULL, 0);
@@ -1320,7 +1316,6 @@ void cleanup_module( void )
 	free_cpumask_var(global->throttle_mask);
 	free_cpumask_var(global->active_mask);
 	free_percpu(core_info);
-	put_online_cpus();
 	pr_info("module uninstalled successfully\n");
 	return;
 }
