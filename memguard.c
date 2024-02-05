@@ -312,7 +312,7 @@ void update_statistics(struct core_info *cinfo)
 		BUG_ON(cinfo->read_budget == 0);
 		idx = (int)(diff * 10 / cinfo->read_budget);
 		cinfo->overall.throttled_error_dist[idx]++;
-		trace_printk("ERR: throttled_error: %d < %d\n", read_used, cinfo->read_budget);
+		trace_printk("ERR: read_throttled_error: %d < %d\n", read_used, cinfo->read_budget);
 		/* compensation for error to catch-up*/
 		cinfo->read_used[PREDICTOR] = cinfo->read_budget + diff;
 	}
@@ -325,7 +325,7 @@ void update_statistics(struct core_info *cinfo)
 		BUG_ON(cinfo->write_budget == 0);
 		idx = (int)(diff * 10 / cinfo->write_budget);
 		cinfo->overall.throttled_error_dist[idx]++;
-		trace_printk("ERR: throttled_error: %d < %d\n", read_used, cinfo->read_budget);
+		trace_printk("ERR: write_throttled_error: %d < %d\n", write_used, cinfo->write_budget);
 		/* compensation for error to catch-up*/
 		cinfo->write_used[PREDICTOR] = cinfo->write_budget + diff;
 	}
