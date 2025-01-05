@@ -1248,9 +1248,9 @@ int init_module( void )
 		cinfo->overall.used_read_budget = 0;
 		cinfo->overall.assigned_read_budget = 0;
         
-        	cinfo->cur_write_budget = cinfo->write_budget;
-        	cinfo->overall.used_write_budget = 0;
-        	cinfo->overall.assigned_write_budget = 0;
+		cinfo->cur_write_budget = cinfo->write_budget;
+		cinfo->overall.used_write_budget = 0;
+		cinfo->overall.assigned_write_budget = 0;
         
 		cinfo->overall.throttled_time_ns = 0;
 		cinfo->overall.throttled = 0;
@@ -1309,9 +1309,9 @@ void cleanup_module( void )
 		perf_event_release_kernel(cinfo->read_event); 
 		cinfo->read_event = NULL; 
         
-	        perf_event_disable(cinfo->write_event);
-       		perf_event_release_kernel(cinfo->write_event);
-        	cinfo->write_event = NULL;
+		perf_event_disable(cinfo->write_event);
+		perf_event_release_kernel(cinfo->write_event);
+		cinfo->write_event = NULL;
 	}
 
 	/* remove debugfs entries */
