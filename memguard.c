@@ -267,7 +267,7 @@ static void print_core_info(int cpu, struct core_info *cinfo)
 /**
  * update per-core usage statistics
  */
-void update_statistics(struct core_info *cinfo)
+static void update_statistics(struct core_info *cinfo)
 {
 	/* counter must be stopped by now. */
 	s64 read_new, write_new;
