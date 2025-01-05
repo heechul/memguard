@@ -59,8 +59,8 @@
 #define BUF_SIZE 256
 #define PREDICTOR 1  /* 0 - used, 1 - ewma(a=1/2), 2 - ewma(a=1/4) */
 
-#define DEFAULT_RD_BUDGET_MB 1000
-#define DEFAULT_WR_BUDGET_MB  500
+#define DEFAULT_RD_BUDGET_MB 2000
+#define DEFAULT_WR_BUDGET_MB 1000
 #define DEFAULT_QMIN_MB       500
 
 #if defined(__aarch64__) || defined(__arm__)
