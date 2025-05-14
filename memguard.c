@@ -42,6 +42,7 @@
 #include <linux/kthread.h>
 #include <linux/printk.h>
 #include <linux/interrupt.h>
+#include <asm/cputype.h>
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(5, 0, 0)
 #  include <uapi/linux/sched/types.h>
@@ -1200,6 +1201,17 @@ int init_module( void )
 	cpumask_copy(global->active_mask, cpu_online_mask);
 
 	pr_info("NR_CPUS: %d, online: %d\n", NR_CPUS, num_online_cpus());
+
+#if defined(__arm__) || defined(__aarch64__)
+	/* check if we are running on ARM */
+	u32 cpu_id = read_cpuid_id();
+	u32 cpu_part = (cpu_id >> 4) & 0xFFF;
+	if (cpu_part == 0xD0B) { // Cortex-A76
+		pr_info("Cortex-A76 detected\n");
+		g_read_counter_id = 0x002A;
+		g_write_counter_id = 0x002C; // didn't work on cortex-a76
+	}
+#endif
 	if (g_read_counter_id >= 0)
 		pr_info("RAW HW READ COUNTER ID: 0x%x\n", g_read_counter_id);
 	if (g_write_counter_id >= 0)
