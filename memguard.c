@@ -163,6 +163,9 @@ static struct core_info __percpu *core_info;
 
 static int g_period_us = 1000;
 
+static int g_read_budget_mb = DEFAULT_RD_BUDGET_MB;
+static int g_write_budget_mb = DEFAULT_WR_BUDGET_MB;
+
 static int g_use_reclaim = 0;   /* 1 - enable reclaim of "guaranteed" bw */
 static int g_use_exclusive = 0; /* 2 - spare bw sharing (rtas'13) 
 				   5 - propotional sharing (tc'15) */
@@ -204,6 +207,10 @@ module_param(g_write_counter_id, int,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 module_param(g_period_us, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(g_period_us, "throttling period in usec");
 
+module_param(g_read_budget_mb, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(g_read_budget_mb, "default read budget in MB/s");
+module_param(g_write_budget_mb, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(g_write_budget_mb, "default write budget in MB/s");
 /**************************************************************************
  * Module main code
  **************************************************************************/
@@ -1204,10 +1211,10 @@ int init_module( void )
 
 #if defined(__arm__) || defined(__aarch64__)
 	/* check if we are running on ARM */
-	u32 cpu_id = read_cpuid_id();
+	u32 cpu_id = (u32)read_cpuid_id();
 	u32 cpu_part = (cpu_id >> 4) & 0xFFF;
-	if (cpu_part == 0xD0B) { // Cortex-A76
-		pr_info("Cortex-A76 detected\n");
+	if (cpu_part == 0xD0B || cpu_part == 0xD42) { // Cortex-A76/A78
+		pr_info("Cortex-A76/A78 detected\n");
 		g_read_counter_id = 0x002A;
 		g_write_counter_id = 0x002C; // didn't work on cortex-a76
 	}
@@ -1217,7 +1224,7 @@ int init_module( void )
 	if (g_write_counter_id >= 0)
 		pr_info("RAW HW WRITE COUNTER ID: 0x%x\n", g_write_counter_id);	
 	pr_info("HZ=%d, g_period_us=%d\n", HZ, g_period_us);
-
+	pr_info("g_read_budget_mb=%d, g_write_budget_mb=%d\n", g_read_budget_mb, g_write_budget_mb);
 	g_qmin = convert_mb_to_events(DEFAULT_QMIN_MB); // default 1000MB/s
 
 	pr_info("Initilizing perf counter\n");
@@ -1228,8 +1235,8 @@ int init_module( void )
 		int read_budget, write_budget;
 
 		/* initialize counter h/w & event structure */
-		read_budget = convert_mb_to_events(DEFAULT_RD_BUDGET_MB);
-		write_budget = convert_mb_to_events(DEFAULT_WR_BUDGET_MB);
+		read_budget = convert_mb_to_events(g_read_budget_mb);
+		write_budget = convert_mb_to_events(g_write_budget_mb);
 
 		/* initialize per-core data structure */
 		memset(cinfo, 0, sizeof(struct core_info));
