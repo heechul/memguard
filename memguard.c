@@ -42,7 +42,6 @@
 #include <linux/kthread.h>
 #include <linux/printk.h>
 #include <linux/interrupt.h>
-#include <asm/cputype.h>
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(5, 0, 0)
 #  include <uapi/linux/sched/types.h>
