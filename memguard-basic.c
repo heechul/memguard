@@ -15,9 +15,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define DEBUG(x)
-#define DEBUG_RECLAIM(x) x
 #define DEBUG_USER(x)
-#define DEBUG_PROFILE(x) x
 
 /**************************************************************************
  * Included Files
@@ -42,7 +40,6 @@
 #include <linux/kthread.h>
 #include <linux/printk.h>
 #include <linux/interrupt.h>
-#include <asm/cputype.h>
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(5, 0, 0)
 #  include <uapi/linux/sched/types.h>
@@ -239,7 +236,7 @@ static void memguard_read_process_overflow(struct irq_work *entry)
 	smp_mb(); // w -> r ordering of the local cpu.
 	if (cpumask_equal(global->throttle_mask, global->active_mask)) {
 		/* all other cores are alreay throttled */
-		DEBUG_RECLAIM(trace_printk("all cores are throttled. "
+		DEBUG(trace_printk("all cores are throttled. "
 					   "skip reclaiming\n"));
 	}
 
@@ -265,10 +262,8 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 	/* must be irq disabled. hard irq */
 	BUG_ON(!irqs_disabled());
 	// WARN_ON_ONCE(!in_interrupt());
-
 	/* stop counter */
 	cinfo->read_event->pmu->stop(cinfo->read_event, PERF_EF_UPDATE);
-
 	/* forward timer */
 	orun = hrtimer_forward_now(timer, global->period_in_ktime);
 	BUG_ON(orun == 0);
@@ -278,12 +273,10 @@ enum hrtimer_restart period_timer_callback_master(struct hrtimer *timer)
 
 	/* assign local period */
 	cinfo->period_cnt += orun;
-
 	period_timer_callback_slave(cinfo);
 
 	/* re-enable counter */
 	cinfo->read_event->pmu->start(cinfo->read_event, PERF_EF_RELOAD);
-
 	return HRTIMER_RESTART;
 }
 
@@ -406,7 +399,7 @@ static void __stop_counter(void *info)
 	
 	/* stop the kthrottle/i */
 	cinfo->throttled_task = NULL;
-	cinfo->period_cnt = -1; // done
+	cinfo->period_cnt = -1; // done 
 
 	/* stop the counter */
 	cinfo->read_event->pmu->stop(cinfo->read_event, PERF_EF_UPDATE);
@@ -685,9 +678,7 @@ int init_module( void )
 					       (void *)((unsigned long)i),
 					       cpu_to_node(i),
 					       "kthrottle/%d", i);
-
 		perf_event_enable(cinfo->read_event);
-		
 		BUG_ON(IS_ERR(cinfo->throttle_thread));
 		kthread_bind(cinfo->throttle_thread, i);
 		wake_up_process(cinfo->throttle_thread);
