@@ -1,20 +1,39 @@
 # MemGuard-Basic
 
-This is a stripped down, basic version of MemGuard that supports only the basic per-core memory bandwidth throttling capability. More specifically, it doesn't support writeback throttling, bandwidth reclaiming/sharing capability of the original MemGuard. 
+A minimal version of MemGuard that provides per-core memory bandwidth throttling. It omits writeback throttling, bandwidth reclaiming, and sharing found in the full MemGuard. Use this when you need a lightweight guard with minimal dependencies.
 
+For the full feature set, see [README.md](README.md).
+
+## Capabilities
+- Per-core LLC miss-based throttling
+- Lightweight module with reduced complexity
+
+## Not Included
+- Writeback throttling
+- Bandwidth reclaiming or sharing
+- Exclusive-mode controls
 
 ## Install
 
-	- build
-	# make basic 
+Build the basic module:
+```bash
+make basic
+```
 
-	- load the module
-	# insmod memguard-basic.ko
+Load it:
+```bash
+insmod memguard-basic.ko
+```
 
 ## Usage
-Once the module is loaded, the thresholds can be set as follows:
+Once loaded, set per-core LLC miss thresholds (values in MB/s):
 
-	- per-core LLC miss threshold assignment.
+Example: assign 500 MB/s for cores 0–3
+```bash
+echo mb 500 500 500 500 > /sys/kernel/debug/memguard/read_limit
+```
 
-	assign 500 MB/s for Cores 0,1,2,3
-	# echo mb 500 500 500 500 > /sys/kernel/debug/memguard/read_limit
+Unload when done:
+```bash
+rmmod memguard
+```
