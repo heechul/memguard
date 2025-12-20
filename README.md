@@ -1,6 +1,8 @@
 # MemGuard
 
-MemGuard is a memory bandwidth reservation system for multi-core platforms. 
+MemGuard is a memory bandwidth reservation system for multi-core platforms.
+
+See [README-basic.md](README-basic.md) for the basic version.
 
 ## ChangeLog
 - Dec 2022
