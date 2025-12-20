@@ -1,4 +1,8 @@
 #!/bin/bash
+# Measure memguard overhead by comparing baseline bandwidth with varying guard periods.
+# Requires the bandwidth benchmark from Isolbench (https://github.com/CSL-KU/IsolBench)
+# Usage: sudo ./overhead.sh
+
 # check if root
 if [ "$(id -u)" != "0" ]; then
 	echo "This script must be run as root" 1>&2
