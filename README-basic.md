@@ -1,6 +1,6 @@
 # MemGuard-Basic
 
-A minimal version of MemGuard that provides per-core memory bandwidth throttling. It omits writeback throttling, bandwidth reclaiming, and sharing found in the full MemGuard. Use this when you need a lightweight guard with minimal dependencies.
+A minimal version of MemGuard that provides per-core memory bandwidth throttling. It omits writeback throttling, bandwidth reclaiming, and sharing found in the full MemGuard. It also eliminates costly statistics collection to reduce overhead. Use this when you need a lightweight guard with minimal overhead.
 
 For the full feature set, see [README.md](README.md).
 
@@ -11,7 +11,6 @@ For the full feature set, see [README.md](README.md).
 ## Not Included
 - Writeback throttling
 - Bandwidth reclaiming or sharing
-- Exclusive-mode controls
 
 ## Install
 
