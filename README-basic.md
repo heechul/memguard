@@ -34,5 +34,5 @@ echo mb 500 500 500 500 > /sys/kernel/debug/memguard/read_limit
 
 Unload when done:
 ```bash
-rmmod memguard
+rmmod memguard-basic
 ```
