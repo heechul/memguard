@@ -17,9 +17,9 @@ echo "none" 1.0 $base_bw
 
 # Test overhead of memguard with different periods
 for p in 10 20 50 100 200 500 1000 10000; do
-	insmod memguard.ko g_period_us=$p g_read_budget_mb=900000 g_write_budget_mb=900000
+	insmod memguard-basic.ko g_period_us=$p g_read_budget_mb=900000 g_write_budget_mb=900000
 	bw=`bandwidth -c 0 -p -20  -t 10 -x 2> /dev/null | grep "B/W" | awk '{ print $4 }'`
 	slowdown=`echo "scale=2; $base_bw / $bw" | bc`
 	echo $p $slowdown $bw
-	rmmod memguard
+	rmmod memguard-basic
 done
