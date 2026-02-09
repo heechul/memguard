@@ -5,7 +5,7 @@
 # - hugepage support. If no hugepages are available, remove '-x' option when executing
 # 	the bandwidth benchmark. Using hugepage is recommended for determinism and
 # 	repeatability.
-# Usage: sudo ./overhead.sh
+# Usage: sudo ./overhead-basic.sh
 
 # check if root
 if [ "$(id -u)" != "0" ]; then
