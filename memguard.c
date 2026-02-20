@@ -696,11 +696,12 @@ static void period_timer_callback_slave(struct core_info *cinfo)
 
 	/* I'm actively participating */
 	cpumask_clear_cpu(cpu, global->throttle_mask);
-	smp_mb();
+	// smp_mb();
 	cpumask_set_cpu(cpu, global->active_mask);
 
 	/* update statistics. */
-	update_statistics(cinfo);
+	if (g_use_reclaim)
+		update_statistics(cinfo);
 
 	/* new budget assignment from user */
 	if (cinfo->read_limit > 0)
@@ -722,7 +723,7 @@ static void period_timer_callback_slave(struct core_info *cinfo)
 	}
 
 	/* per-task donation policy */
-        if (g_use_reclaim) {
+	if (g_use_reclaim) {
 		/* donate 'expected surplus' ahead of time. */
 		int sur_rd, sur_wr;
 		sur_rd = max(cinfo->read_budget - cinfo->read_used[PREDICTOR], 0);
@@ -730,10 +731,10 @@ static void period_timer_callback_slave(struct core_info *cinfo)
 		sur_wr = max(cinfo->write_budget - cinfo->write_used[PREDICTOR], 0);
 		cinfo->cur_write_budget = cinfo->write_budget - sur_wr;
 		DEBUG_RECLAIM(trace_printk("donated %d %d\n", sur_rd, sur_wr));
-        } else {
+	} else {
 		cinfo->cur_read_budget = cinfo->read_budget;
 		cinfo->cur_write_budget = cinfo->write_budget;
-        }
+	}
 
 	/* unthrottle tasks (if any) */
 	cinfo->throttled_task = NULL;
